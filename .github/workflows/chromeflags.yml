@@ -30,37 +30,44 @@ jobs:
           from pathlib import Path
           parser = Path("chromeflags.py")
           text = parser.read_text(encoding="utf-8")
+
+          if "import binascii\n" not in text:
+              text = text.replace("import base64\n", "import base64\nimport binascii\n", 1)
+          text = text.replace("GITILES_PRIMARY = True\n", "")
+          text = text.replace("GITHUB_API_FIRST = True\n", "")
+
           start = text.index("\ndef fetch_chromium(")
           end = text.index("\ndef load(", start)
-          replacement = '''\ndef fetch_chromium(path: str, version: str, optional: bool = False) -> str | None:\n    gitiles_url = f"https://chromium.googlesource.com/chromium/src/+show/{version}/{path}?format=TEXT"\n    raw_url = f"{RAW}/{version}/{path}"\n    api_url = f"{GITHUB_API}/{path}?ref={version}"\n\n    def from_gitiles() -> str | None:\n        content = fetch(gitiles_url, optional=True)\n        if content is None:\n            return None\n        encoded = "".join(content.split())\n        try:\n            decoded = base64.b64decode(encoded, validate=True)\n        except (ValueError, base64.binascii.Error):\n            return None\n        return decoded.decode("utf-8", "replace")\n\n    def from_api() -> str | None:\n        content = fetch(api_url, optional=True)\n        if content is None:\n            return None\n        data = json.loads(content)\n        encoded = data.get("content")\n        if not isinstance(encoded, str):\n            return None\n        return base64.b64decode("".join(encoded.split())).decode("utf-8", "replace")\n\n    text = from_gitiles()\n    if text is None:\n        text = fetch(raw_url, optional=True)\n    if text is None:\n        text = from_api()\n    if text is not None:\n        return text\n    if optional:\n        return None\n    raise FileNotFoundError(f"Chromium source not found: {path}@{version}")\n'''
+          replacement = '''\ndef fetch_chromium(path: str, version: str, optional: bool = False) -> str | None:\n    endpoints = (\n        (\n            f"https://chromium.googlesource.com/chromium/src/+show/{version}/{path}?format=TEXT",\n            "gitiles",\n        ),\n        (f"{RAW}/{version}/{path}", "raw"),\n        (f"{GITHUB_API}/{path}?ref={version}", "api"),\n    )\n\n    for url, kind in endpoints:\n        try:\n            content = fetch(url)\n        except urllib.error.HTTPError as error:\n            if error.code == 404:\n                continue\n            raise\n\n        if kind == "gitiles":\n            encoded = "".join(content.split())\n            try:\n                return base64.b64decode(encoded, validate=True).decode("utf-8", "replace")\n            except (ValueError, binascii.Error):\n                continue\n\n        if kind == "api":\n            try:\n                data = json.loads(content)\n                encoded = data.get("content")\n                if not isinstance(encoded, str):\n                    continue\n                return base64.b64decode("".join(encoded.split())).decode("utf-8", "replace")\n            except (json.JSONDecodeError, ValueError, binascii.Error):\n                continue\n\n        return content\n\n    if optional:\n        return None\n    raise FileNotFoundError(f"Chromium source not found: {path}@{version}")\n'''
           text = text[:start] + replacement + text[end:]
+
+          marker = "\ndef main() -> None:\n"
+          helper = '''\ndef load_strings_for_report(\n    version: str,\n    source: str,\n    added: list[str],\n    cache: dict,\n) -> dict[str, str]:\n    cache_key = ("strings", version, source)\n    strings = load("strings", version, source, cache)\n    entries = load("entries", version, source, cache)\n\n    for _ in range(2):\n        missing = {\n            key\n            for flag in added\n            for key in (entries[flag]["title_key"], entries[flag]["desc_key"])\n            if key not in strings\n        }\n        if not missing:\n            return strings\n        cache.pop(cache_key, None)\n        strings = load("strings", version, source, cache)\n\n    return strings\n'''
+          if "def load_strings_for_report(" in text:
+              helper_start = text.index("\ndef load_strings_for_report(")
+              helper_end = text.index(marker, helper_start)
+              text = text[:helper_start] + helper + text[helper_end:]
+          else:
+              text = text[:text.index(marker)] + helper + text[text.index(marker):]
+
+          old = '''        document = report(\n            name,\n            version,\n            load("strings", version, source, cache),\n            selected,\n            added,\n        )'''
+          new = '''        document = report(\n            name,\n            version,\n            load_strings_for_report(version, source, added, cache),\n            selected,\n            added,\n        )'''
+          if old not in text:
+              raise SystemExit("report call pattern not found")
+          text = text.replace(old, new, 1)
+
           parser.write_text(text, encoding="utf-8")
           PY
           git add chromeflags.py
           if ! git diff --staged --quiet; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git commit -m "fix: use canonical Chromium Gitiles path"
+            git commit -m "fix: harden Chromium source loading"
             git push
           fi
 
       - name: Run unit tests
         run: python3 -m unittest -v test_chromeflags.py
-
-      - name: Diagnose Chromium enterprise strings
-        run: |
-          python3 - <<'PY'
-          import chromeflags
-          path = "components/enterprise/net/core/flag_descriptions.cc"
-          for version in ("152.0.7977.64", "153.0.8010.12", "153.0.8010.18"):
-              text = chromeflags.fetch_chromium(path, version, optional=True)
-              parsed = chromeflags.parse_strings(text or "")
-              print(f"version={version} length={len(text) if text else None} contains={'kEnableDynamicRouteFetchingName' in (text or '')} parsed={parsed.get('kEnableDynamicRouteFetchingName')!r} count={len(parsed)}")
-          loaded = chromeflags.load("strings", "153.0.8010.12", "desktop", {})
-          print(f"load_count={len(loaded)} loaded_name={loaded.get('kEnableDynamicRouteFetchingName')!r}")
-          entries = chromeflags.load("entries", "153.0.8010.12", "desktop", {})
-          print(f"entry_name={entries.get('enable-dynamic-route-fetching', {}).get('title_key')!r}")
-          PY
 
       - name: Update the reports
         run: |
