@@ -30,6 +30,7 @@ SOURCES = {
         "entries": "ios/chrome/browser/flags/about_flags.mm",
         "strings": [
             ("ios/chrome/browser/flags/ios_chrome_flag_descriptions.h", False),
+            ("components/enterprise/net/core/flag_descriptions.cc", True),
         ],
     },
 }

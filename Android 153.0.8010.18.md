@@ -82,7 +82,7 @@ When enabled, hovering over suggestions in the Android keyboard accessory previe
 
 **Enable Autofill settings enterprise policy**
 
-When enabled, the Autofill settings enterprise policy takes effect, and forms ai settings are decoupled from Autofill profile settings.
+When enabled, the Autofill settings enterprise policy takes effect, and forms ai settings are decoupled from Autofill profile settings. 
 
 `chrome://flags/#autofill-enable-autofill-settings-enterprise-policy`
 
