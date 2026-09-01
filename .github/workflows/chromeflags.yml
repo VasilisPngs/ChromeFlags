@@ -31,20 +31,15 @@ jobs:
           import re
           parser = Path("chromeflags.py")
           text = parser.read_text(encoding="utf-8")
-          if "GITHUB_API = \"https://api.github.com/repos/chromium/chromium/contents\"" not in text:
+          if "GITHUB_API_FIRST = True" not in text:
               text = text.replace(
-                  'import gzip\n',
-                  'import base64\nimport gzip\n',
+                  'GITHUB_API = "https://api.github.com/repos/chromium/chromium/contents"\n',
+                  'GITHUB_API = "https://api.github.com/repos/chromium/chromium/contents"\nGITHUB_API_FIRST = True\n',
                   1,
               )
-              text = text.replace(
-                  'RAW = "https://raw.githubusercontent.com/chromium/chromium"\n',
-                  'RAW = "https://raw.githubusercontent.com/chromium/chromium"\nGITHUB_API = "https://api.github.com/repos/chromium/chromium/contents"\n',
-                  1,
-              )
-              start = text.index('\ndef load(kind: str, version: str, source: str, cache: dict) -> dict:')
-              end = text.index('\ndef number(', start)
-              replacement = '''\ndef fetch_chromium(path: str, version: str, optional: bool = False) -> str | None:\n    raw_url = f"{RAW}/{version}/{path}"\n    try:\n        text = fetch(raw_url, optional=True)\n        if text is not None:\n            return text\n    except urllib.error.HTTPError as error:\n        if error.code != 404:\n            raise\n\n    api_url = f"{GITHUB_API}/{path}?ref={version}"\n    try:\n        content = fetch(api_url, optional=True)\n        if content is not None:\n            data = json.loads(content)\n            encoded = data.get("content")\n            if not isinstance(encoded, str):\n                raise ValueError(f"missing base64 content for Chromium source {path}@{version}")\n            return base64.b64decode(encoded).decode("utf-8", "replace")\n    except urllib.error.HTTPError as error:\n        if error.code != 404:\n            raise\n\n    if optional:\n        return None\n    raise FileNotFoundError(f"Chromium source not found: {path}@{version}")\n\n\ndef load(kind: str, version: str, source: str, cache: dict) -> dict:\n    key = (kind, version, source)\n    if key in cache:\n        return cache[key]\n\n    if source not in SOURCES:\n        raise ValueError(f"unknown source group: {source}")\n\n    if kind == "entries":\n        path = SOURCES[source]["entries"]\n        result = parse_entries(fetch_chromium(path, version))\n    elif kind == "strings":\n        result = {}\n        for path, optional in SOURCES[source]["strings"]:\n            text = fetch_chromium(path, version, optional)\n            if text is not None:\n                result.update(parse_strings(text))\n    else:\n        raise ValueError(f"unknown data kind: {kind}")\n\n    cache[key] = result\n    return result\n'''
+              start = text.index('\ndef fetch_chromium(')
+              end = text.index('\ndef load(', start)
+              replacement = '''\ndef fetch_chromium(path: str, version: str, optional: bool = False) -> str | None:\n    api_url = f"{GITHUB_API}/{path}?ref={version}"\n    raw_url = f"{RAW}/{version}/{path}"\n\n    def from_api() -> str | None:\n        content = fetch(api_url, optional=True)\n        if content is None:\n            return None\n        data = json.loads(content)\n        encoded = data.get("content")\n        if not isinstance(encoded, str):\n            raise ValueError(f"missing base64 content for Chromium source {path}@{version}")\n        return base64.b64decode(encoded).decode("utf-8", "replace")\n\n    if GITHUB_API_FIRST:\n        text = from_api()\n        if text is not None:\n            return text\n        text = fetch(raw_url, optional=True)\n    else:\n        text = fetch(raw_url, optional=True)\n        if text is None:\n            text = from_api()\n\n    if text is not None:\n        return text\n    if optional:\n        return None\n    raise FileNotFoundError(f"Chromium source not found: {path}@{version}")\n'''
               text = text[:start] + replacement + text[end:]
               parser.write_text(text, encoding="utf-8")
           workflow = Path(".github/workflows/chromeflags.yml")
@@ -61,7 +56,7 @@ jobs:
           if ! git diff --staged --quiet; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git commit -m "fix: add Chromium source fallback"
+            git commit -m "fix: make Chromium API source primary"
             git push
           fi
 
