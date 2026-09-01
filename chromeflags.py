@@ -420,7 +420,7 @@ def parse_strings(source: str) -> dict[str, str]:
 
 
 def fetch_chromium(path: str, version: str, optional: bool = False) -> str | None:
-    gitiles_url = f"https://chromium.googlesource.com/chromium/src/+/{version}/{path}?format=TEXT"
+    gitiles_url = f"https://chromium.googlesource.com/chromium/src/+show/{version}/{path}?format=TEXT"
     raw_url = f"{RAW}/{version}/{path}"
     api_url = f"{GITHUB_API}/{path}?ref={version}"
 
