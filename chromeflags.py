@@ -463,7 +463,6 @@ def load(kind: str, version: str, source: str, cache: dict) -> dict:
     key = (kind, version, source)
     if key in cache:
         return cache[key]
-
     if source not in SOURCES:
         raise ValueError(f"unknown source group: {source}")
 
@@ -473,90 +472,21 @@ def load(kind: str, version: str, source: str, cache: dict) -> dict:
     elif kind == "strings":
         result = {}
         for path, optional in SOURCES[source]["strings"]:
-            text = fetch_chromium(path, version, optional)
-            if text is not None:
-                result.update(parse_strings(text))
+            file_key = ("string_file", version, path)
+            parsed = cache.get(file_key)
+            if parsed is None:
+                text = fetch_chromium(path, version, optional)
+                if text is None:
+                    parsed = {}
+                else:
+                    parsed = parse_strings(text)
+                    cache[file_key] = parsed
+            result.update(parsed)
     else:
         raise ValueError(f"unknown data kind: {kind}")
 
     cache[key] = result
     return result
-
-def number(version: str) -> tuple[int, ...]:
-    parts = version.split(".")
-    if len(parts) != 4 or not all(part.isdigit() for part in parts):
-        raise ValueError(f"invalid Chrome version: {version}")
-    return tuple(int(part) for part in parts)
-
-
-def stable(platform: str) -> dict[int, str]:
-    content = fetch(f"{DASH}?channel=Stable&platform={platform}&num=60")
-    data = json.loads(content)
-    releases = {}
-
-    for item in data:
-        version = item.get("version")
-        if not version:
-            continue
-        try:
-            parsed = number(version)
-        except ValueError:
-            continue
-        milestone = parsed[0]
-        if milestone not in releases or parsed > number(releases[milestone]):
-            releases[milestone] = version
-
-    return releases
-
-
-def select(entries: dict[str, dict], tokens: set[str]) -> dict[str, dict]:
-    return {
-        flag: entry
-        for flag, entry in entries.items()
-        if entry["os"] & tokens
-    }
-
-
-def escape(text: str) -> str:
-    return text.replace("|", "\\|").replace("\r", " ").replace("\n", " ")
-
-
-def describe(flag: str, entry: dict, strings: dict) -> tuple[str, str]:
-    title = strings.get(entry["title_key"])
-    desc = strings.get(entry["desc_key"])
-    if title is None:
-        raise ValueError(f"missing title string {entry['title_key']} for {flag}")
-    if desc is None:
-        raise ValueError(f"missing description string {entry['desc_key']} for {flag}")
-    return title, desc
-
-
-def report(
-    platform: str,
-    version: str,
-    strings: dict,
-    selected: dict[str, dict],
-    added: list[str],
-) -> str:
-    lines = [f"# {platform} {version}", ""]
-    if not added:
-        lines.append("This release added no new flags.")
-
-    for position, flag in enumerate(added):
-        if position:
-            lines.extend(["---", ""])
-        title, body = describe(flag, selected[flag], strings)
-        lines.extend([
-            f"**{escape(title)}**",
-            "",
-            escape(body),
-            "",
-            f"`chrome://flags/#{flag}`",
-            "",
-        ])
-
-    return "\n".join(lines).rstrip("\n") + "\n"
-
 
 def load_strings_for_report(
     version: str,
@@ -564,21 +494,31 @@ def load_strings_for_report(
     added: list[str],
     cache: dict,
 ) -> dict[str, str]:
-    cache_key = ("strings", version, source)
-    strings = load("strings", version, source, cache)
     entries = load("entries", version, source, cache)
-    for _ in range(2):
-        missing = {
-            key
-            for flag in added
-            for key in (entries[flag]["title_key"], entries[flag]["desc_key"])
-            if key not in strings
-        }
-        if not missing:
-            return strings
-        cache.pop(cache_key, None)
-        strings = load("strings", version, source, cache)
-    return strings
+    result = {}
+    for path, optional in SOURCES[source]["strings"]:
+        file_key = ("string_file", version, path)
+        parsed = cache.get(file_key)
+        if parsed is None:
+            text = fetch_chromium(path, version, optional)
+            if text is None:
+                parsed = {}
+            else:
+                parsed = parse_strings(text)
+                cache[file_key] = parsed
+        result.update(parsed)
+
+    missing = {
+        key
+        for flag in added
+        for key in (entries[flag]["title_key"], entries[flag]["desc_key"])
+        if key not in result
+    }
+    if missing:
+        raise ValueError(
+            "missing Chromium flag strings: " + ", ".join(sorted(missing))
+        )
+    return result
 
 def main() -> None:
     cache = {}
@@ -621,7 +561,6 @@ def main() -> None:
         platform_params.append((platform, version, baseline))
         load_tasks.add(("entries", version, source))
         load_tasks.add(("entries", baseline, source))
-        load_tasks.add(("strings", version, source))
 
     for kind, version, source in sorted(load_tasks):
         load(kind, version, source, cache)
