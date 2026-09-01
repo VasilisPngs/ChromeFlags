@@ -1,4 +1,3 @@
-import ast
 import gzip
 import json
 import re
@@ -226,12 +225,16 @@ def split_top_level(text: str, delimiter: str = ",") -> list[str]:
             depth[char] += 1
         elif char in pairs:
             opener = pairs[char]
+            if depth[opener] == 0:
+                raise ValueError(f"unbalanced delimiter {char}")
             depth[opener] -= 1
         elif char == delimiter and not any(depth.values()):
             fields.append(text[start:index].strip())
             start = index + 1
         index += 1
 
+    if quote is not None or any(depth.values()):
+        raise ValueError("unterminated entry field")
     fields.append(text[start:].strip())
     return fields
 
@@ -262,13 +265,15 @@ def entry_blocks(body: str) -> list[str]:
                 start = index + 1
             depth += 1
         elif char == "}":
+            if depth == 0:
+                raise ValueError("unexpected closing brace in flag entries")
             depth -= 1
             if depth == 0 and start is not None:
                 blocks.append(body[start:index])
                 start = None
         index += 1
 
-    if depth != 0:
+    if quote is not None or depth != 0:
         raise ValueError("unterminated flag entry block")
     return blocks
 
@@ -312,17 +317,101 @@ def parse_entries(source: str) -> dict[str, dict]:
 
 
 def decode_cpp_string(value: str) -> str:
-    try:
-        return ast.literal_eval(f'"{value}"')
-    except (SyntaxError, ValueError):
-        return value
+    result = []
+    byte_buffer = bytearray()
+
+    def flush_bytes() -> None:
+        if byte_buffer:
+            result.append(bytes(byte_buffer).decode("utf-8", "replace"))
+            byte_buffer.clear()
+
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if char != "\\":
+            flush_bytes()
+            result.append(char)
+            index += 1
+            continue
+
+        if index + 1 >= len(value):
+            result.append("\\")
+            break
+
+        escape = value[index + 1]
+        simple = {
+            "a": "\a",
+            "b": "\b",
+            "f": "\f",
+            "n": "\n",
+            "r": "\r",
+            "t": "\t",
+            "v": "\v",
+            "\\": "\\",
+            "\"": "\"",
+            "'": "'",
+            "?": "?",
+        }
+        if escape in simple:
+            flush_bytes()
+            result.append(simple[escape])
+            index += 2
+            continue
+
+        if escape == "x":
+            cursor = index + 2
+            while cursor < len(value) and value[cursor] in "0123456789abcdefABCDEF":
+                cursor += 1
+            if cursor == index + 2:
+                flush_bytes()
+                result.append("x")
+                index += 2
+            else:
+                byte_buffer.append(int(value[index + 2:cursor], 16) & 0xFF)
+                index = cursor
+            continue
+
+        if escape == "u":
+            digits = value[index + 2:index + 6]
+            if len(digits) == 4 and all(char in "0123456789abcdefABCDEF" for char in digits):
+                flush_bytes()
+                result.append(chr(int(digits, 16)))
+                index += 6
+                continue
+
+        if escape == "U":
+            digits = value[index + 2:index + 10]
+            if len(digits) == 8 and all(char in "0123456789abcdefABCDEF" for char in digits):
+                codepoint = int(digits, 16)
+                if codepoint <= 0x10FFFF:
+                    flush_bytes()
+                    result.append(chr(codepoint))
+                    index += 10
+                    continue
+
+        if escape in "01234567":
+            cursor = index + 1
+            while cursor < min(index + 4, len(value)) and value[cursor] in "01234567":
+                cursor += 1
+            byte_buffer.append(int(value[index + 1:cursor], 8) & 0xFF)
+            index = cursor
+            continue
+
+        flush_bytes()
+        result.append(escape)
+        index += 2
+
+    flush_bytes()
+    return "".join(result)
 
 
 def parse_strings(source: str) -> dict[str, str]:
     result = {}
     for match in STRING_DECL_RE.finditer(strip_cpp_comments(source)):
         literals = LITERAL_RE.findall(match.group("value"))
-        result[match.group("name")] = "".join(decode_cpp_string(literal) for literal in literals)
+        result[match.group("name")] = "".join(
+            decode_cpp_string(literal) for literal in literals
+        )
     return result
 
 
