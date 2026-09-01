@@ -14,7 +14,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: chromeflags-v2
+  group: chromeflags-final
   cancel-in-progress: false
 
 jobs:
@@ -32,9 +32,8 @@ jobs:
           text = parser.read_text(encoding="utf-8")
           old = '''    "ios": {\n        "entries": "ios/chrome/browser/flags/about_flags.mm",\n        "strings": [\n            ("ios/chrome/browser/flags/ios_chrome_flag_descriptions.h", False),\n        ],\n    },'''
           new = '''    "ios": {\n        "entries": "ios/chrome/browser/flags/about_flags.mm",\n        "strings": [\n            ("ios/chrome/browser/flags/ios_chrome_flag_descriptions.h", False),\n            ("components/enterprise/net/core/flag_descriptions.cc", True),\n        ],\n    },'''
-          if old not in text:
-              raise SystemExit("expected iOS source mapping not found")
-          parser.write_text(text.replace(old, new, 1), encoding="utf-8")
+          if old in text:
+              parser.write_text(text.replace(old, new, 1), encoding="utf-8")
           PY
 
       - name: Syntax check
@@ -61,14 +60,33 @@ jobs:
           print(f"OK: merged iOS strings={len(ios)}")
           PY
 
-      - name: Update the reports
+      - name: Commit parser fix
         run: |
-          TITLE="$(python3 chromeflags.py)"
-          echo "## $TITLE" >> "$GITHUB_STEP_SUMMARY"
-          git add -A
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add chromeflags.py
           if ! git diff --staged --quiet; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git commit -m "flags: $TITLE"
+            git commit -m "fix: add shared iOS flag descriptions"
             git push
           fi
+
+      - name: Update the reports
+        run: |
+          set -e
+          for attempt in 1 2 3; do
+            git fetch origin main
+            git rebase origin/main
+            TITLE="$(python3 chromeflags.py)"
+            echo "## $TITLE" >> "$GITHUB_STEP_SUMMARY"
+            git add -A
+            if git diff --staged --quiet; then
+              exit 0
+            fi
+            git commit -m "flags: $TITLE"
+            if git push; then
+              exit 0
+            fi
+            git reset --hard origin/main
+          done
+          echo "Unable to push generated reports after 3 attempts" >&2
+          exit 1
