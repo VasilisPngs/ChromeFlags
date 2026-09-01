@@ -1,4 +1,6 @@
+import ast
 import gzip
+import json
 import re
 import sys
 import time
@@ -7,39 +9,72 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+DASH = "https://chromiumdash.appspot.com/fetch_releases"
+RAW = "https://raw.githubusercontent.com/chromium/chromium"
 ROOT = Path(__file__).resolve().parent
+
+SOURCES = {
+    "desktop": {
+        "entries": "chrome/browser/about_flags.cc",
+        "strings": [
+            ("chrome/browser/flag_descriptions.h", False),
+            ("components/commerce/core/flag_descriptions.cc", True),
+            ("components/contextual_tasks/public/features.cc", True),
+            ("components/enterprise/net/core/flag_descriptions.cc", True),
+            ("components/omnibox/common/omnibox_features.cc", True),
+        ],
+    },
+    "ios": {
+        "entries": "ios/chrome/browser/flags/about_flags.mm",
+        "strings": [
+            ("ios/chrome/browser/flags/ios_chrome_flag_descriptions.h", False),
+        ],
+    },
+}
 
 PLATFORMS = [
     {
-        "name": "Android",
-        "source": "chrome/browser/about_flags.cc",
-        "tokens": {"kOsAndroid"},
-    },
-    {
-        "name": "Linux",
-        "source": "chrome/browser/about_flags.cc",
-        "tokens": {"kOsDesktop", "kOsLinux"},
-    },
-    {
         "name": "Windows",
-        "source": "chrome/browser/about_flags.cc",
-        "tokens": {"kOsDesktop", "kOsWin"},
+        "source": "desktop",
+        "tokens": {"kOsWin", "kOsAll", "kOsDesktop", "kOsAura"},
     },
     {
         "name": "macOS",
-        "source": "chrome/browser/about_flags.cc",
-        "tokens": {"kOsDesktop", "kOsMac"},
+        "dash": "Mac",
+        "source": "desktop",
+        "tokens": {"kOsMac", "kOsAll", "kOsDesktop"},
+    },
+    {
+        "name": "Linux",
+        "source": "desktop",
+        "tokens": {"kOsLinux", "kOsAll", "kOsDesktop", "kOsAura"},
+    },
+    {
+        "name": "Android",
+        "source": "desktop",
+        "tokens": {"kOsAndroid", "kOsAll"},
     },
     {
         "name": "iOS-iPadOS",
-        "source": "ios/chrome/browser/flags/about_flags.mm",
-        "tokens": {"kOsIos"},
+        "dash": "iOS",
+        "source": "ios",
+        "tokens": {"kOsIos", "kOsAll"},
     },
 ]
 
 FEATURE_ENTRIES_RE = re.compile(
-    r"\bkFeatureEntries\b\s*(?:\[\]\s*)?=\s*\{", re.MULTILINE
+    r"\bkFeatureEntries\b[^=]*=\s*(?:std::to_array\s*<[^;{}]+>\s*)?\(?\s*\{",
+    re.MULTILINE,
 )
+STRING_DECL_RE = re.compile(
+    r"(?:inline\s+|static\s+|constexpr\s+|const\s+)*"
+    r"char\s+(?P<name>k[A-Za-z0-9_]+)\s*\[\]\s*=\s*"
+    r"(?P<value>(?:\"(?:\\.|[^\"\\])*\"\s*)+);",
+    re.MULTILINE,
+)
+LITERAL_RE = re.compile(r'"((?:[^"\\]|\\.)*)"', re.DOTALL)
+IDENTIFIER_RE = re.compile(r"(?:[A-Za-z_][A-Za-z0-9_]*::)*(k[A-Za-z0-9_]+)\s*$")
+OS_RE = re.compile(r"\bkOs[A-Za-z]+\b")
 
 
 def fetch(url: str, optional: bool = False) -> str | None:
@@ -65,37 +100,73 @@ def fetch(url: str, optional: bool = False) -> str | None:
                 time.sleep(3 * (attempt + 1))
                 continue
             raise
-
-
-def expand(macro: str, source: str) -> list[str]:
-    pattern = rf"#define\s+{re.escape(macro)}\s*\((.*?)\)"
-    match = re.search(pattern, source)
-    if not match:
-        return []
-    params = [param.strip() for param in match.group(1).split(",")]
-    pattern = rf"\b{re.escape(macro)}\s*\((.*?)\)"
-    matches = re.findall(pattern, source, re.DOTALL)
-    expanded = []
-    for m in matches:
-        args = [arg.strip() for arg in m.split(",")]
-        if len(args) == len(params):
-            expanded.append(dict(zip(params, args)))
-    return expanded
+    raise RuntimeError(f"failed to fetch {url}")
 
 
 def strip_cpp_comments(text: str) -> str:
-    pattern = r'//.*?$|/\*.*?\*/|"(?:\\.|[^\\"])*"'
-    def replacer(match: re.Match) -> str:
-        s = match.group(0)
-        return s if s.startswith('"') else ('\n' if s.startswith('//') else '')
-    return re.sub(pattern, replacer, text, flags=re.MULTILINE | re.DOTALL)
+    result = []
+    index = 0
+    length = len(text)
+    state = "code"
+
+    while index < length:
+        char = text[index]
+        next_char = text[index + 1] if index + 1 < length else ""
+
+        if state == "code":
+            if char == "/" and next_char == "/":
+                state = "line_comment"
+                result.append(" ")
+                index += 2
+                continue
+            if char == "/" and next_char == "*":
+                state = "block_comment"
+                result.append(" ")
+                index += 2
+                continue
+            if char == '"':
+                state = "string"
+            result.append(char)
+            index += 1
+            continue
+
+        if state == "line_comment":
+            if char == "\n":
+                state = "code"
+                result.append(char)
+            else:
+                result.append(" ")
+            index += 1
+            continue
+
+        if state == "block_comment":
+            if char == "*" and next_char == "/":
+                state = "code"
+                result.extend((" ", " "))
+                index += 2
+            else:
+                result.append("\n" if char == "\n" else " ")
+                index += 1
+            continue
+
+        result.append(char)
+        if char == "\\" and index + 1 < length:
+            result.append(text[index + 1])
+            index += 2
+        elif char == '"':
+            state = "code"
+            index += 1
+        else:
+            index += 1
+
+    return "".join(result)
 
 
 def feature_entries(text: str) -> str:
     clean_text = strip_cpp_comments(text)
     match = FEATURE_ENTRIES_RE.search(clean_text)
     if not match:
-        sys.exit("kFeatureEntries initializer not found")
+        raise ValueError("kFeatureEntries initializer not found")
 
     start = match.end()
     depth = 1
@@ -103,16 +174,19 @@ def feature_entries(text: str) -> str:
 
     while index < len(clean_text):
         char = clean_text[index]
-        if char == '"':
+        if char in ('"', "'"):
+            quote = char
             index += 1
             while index < len(clean_text):
                 if clean_text[index] == "\\":
                     index += 2
                     continue
-                if clean_text[index] == '"':
+                if clean_text[index] == quote:
+                    index += 1
                     break
                 index += 1
-        elif char == "{":
+            continue
+        if char == "{":
             depth += 1
         elif char == "}":
             depth -= 1
@@ -120,42 +194,136 @@ def feature_entries(text: str) -> str:
                 return clean_text[start:index]
         index += 1
 
-    sys.exit("kFeatureEntries initializer is unterminated")
+    raise ValueError("kFeatureEntries initializer is unterminated")
+
+
+def split_top_level(text: str, delimiter: str = ",") -> list[str]:
+    fields = []
+    start = 0
+    depth = {"(": 0, "[": 0, "{": 0}
+    pairs = {")": "(",
+        "]": "[",
+        "}": "{",
+    }
+    index = 0
+    quote = None
+
+    while index < len(text):
+        char = text[index]
+        if quote is not None:
+            if char == "\\":
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in ('"', "'"):
+            quote = char
+            index += 1
+            continue
+        if char in depth:
+            depth[char] += 1
+        elif char in pairs:
+            opener = pairs[char]
+            depth[opener] -= 1
+        elif char == delimiter and not any(depth.values()):
+            fields.append(text[start:index].strip())
+            start = index + 1
+        index += 1
+
+    fields.append(text[start:].strip())
+    return fields
+
+
+def entry_blocks(body: str) -> list[str]:
+    blocks = []
+    depth = 0
+    start = None
+    index = 0
+    quote = None
+
+    while index < len(body):
+        char = body[index]
+        if quote is not None:
+            if char == "\\":
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in ('"', "'"):
+            quote = char
+            index += 1
+            continue
+        if char == "{":
+            if depth == 0:
+                start = index + 1
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0 and start is not None:
+                blocks.append(body[start:index])
+                start = None
+        index += 1
+
+    if depth != 0:
+        raise ValueError("unterminated flag entry block")
+    return blocks
+
+
+def string_key(expression: str) -> str:
+    match = IDENTIFIER_RE.search(expression.strip())
+    if not match:
+        raise ValueError(f"flag description key not found in expression: {expression}")
+    return match.group(1)
 
 
 def parse_entries(source: str) -> dict[str, dict]:
-    block = feature_entries(source)
-    entries = {}
-    pattern = r'\{\s*"([^"]+)"\s*,\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^\}]+)\}'
+    body = feature_entries(source)
+    result = {}
 
-    for match in re.finditer(pattern, block):
-        flag, title, description, os_flags = match.groups()
-        os_set = {
-            token.strip()
-            for token in os_flags.replace("|", " ").split()
-            if token.strip()
-        }
-        entries[flag] = {
-            "title": title.strip(),
-            "description": description.strip(),
-            "os": os_set,
+    for block in entry_blocks(body):
+        fields = split_top_level(block)
+        if len(fields) < 4:
+            continue
+
+        flag_match = re.fullmatch(r'"([A-Za-z0-9][A-Za-z0-9._-]*)"', fields[0])
+        if not flag_match:
+            continue
+
+        flag = flag_match.group(1)
+        title_key = string_key(fields[1])
+        desc_key = string_key(fields[2])
+        os_tokens = set(OS_RE.findall(fields[3]))
+        if not os_tokens:
+            continue
+
+        result[flag] = {
+            "title_key": title_key,
+            "desc_key": desc_key,
+            "os": os_tokens,
         }
 
-    return entries
+    if not result:
+        raise ValueError("no valid flag entries parsed from kFeatureEntries")
+    return result
+
+
+def decode_cpp_string(value: str) -> str:
+    try:
+        return ast.literal_eval(f'"{value}"')
+    except (SyntaxError, ValueError):
+        return value
 
 
 def parse_strings(source: str) -> dict[str, str]:
-    strings = {}
-    pattern = r'(?:constexpr\s+char\s+|const\n?char\s+)(\w+)\[\]\s*=\s*"((?:[^"\\]|\\.)*)";'
-
-    for name, value in re.findall(pattern, source):
-        try:
-            decoded = value.encode("utf-8").decode("unicode_escape")
-        except Exception:
-            decoded = value
-        strings[name] = decoded
-
-    return strings
+    result = {}
+    for match in STRING_DECL_RE.finditer(strip_cpp_comments(source)):
+        literals = LITERAL_RE.findall(match.group("value"))
+        result[match.group("name")] = "".join(decode_cpp_string(literal) for literal in literals)
+    return result
 
 
 def load(kind: str, version: str, source: str, cache: dict) -> dict:
@@ -163,45 +331,48 @@ def load(kind: str, version: str, source: str, cache: dict) -> dict:
     if key in cache:
         return cache[key]
 
+    if source not in SOURCES:
+        raise ValueError(f"unknown source group: {source}")
+
     if kind == "entries":
-        url = f"https://chromium.googlesource.com/chromium/src/+/{version}/{source}?format=TEXT"
-        content = fetch(url)
-        import base64
-        decoded = base64.b64decode(content).decode("utf-8", "replace")
-        result = parse_entries(decoded)
+        path = SOURCES[source]["entries"]
+        text = fetch(f"{RAW}/{version}/{path}")
+        result = parse_entries(text)
     elif kind == "strings":
-        url = f"https://chromium.googlesource.com/chromium/str/+/{version}/chrome/app/generated_resources.grd?format=TEXT"
-        content = fetch(url, optional=True)
-        if content:
-            import base64
-            decoded = base64.b64decode(content).decode("utf-8", "replace")
-            result = parse_strings(decoded)
-        else:
-            result = {}
+        result = {}
+        for path, optional in SOURCES[source]["strings"]:
+            text = fetch(f"{RAW}/{version}/{path}", optional)
+            if text is not None:
+                result.update(parse_strings(text))
     else:
-        raise ValueError(f"Unknown kind: {kind}")
+        raise ValueError(f"unknown data kind: {kind}")
 
     cache[key] = result
     return result
 
 
-def number(version_str: str) -> tuple[int, ...]:
-    return tuple(int(x) for x in version_str.split("."))
+def number(version: str) -> tuple[int, ...]:
+    parts = version.split(".")
+    if len(parts) != 4 or not all(part.isdigit() for part in parts):
+        raise ValueError(f"invalid Chrome version: {version}")
+    return tuple(int(part) for part in parts)
 
 
-def stable(platform_name: str) -> dict[int, str]:
-    url = f"https://chromiumdash.appspot.com/fetch_releases?platform={platform_name}&channel=Stable&num=100"
-    content = fetch(url)
-    import json
+def stable(platform: str) -> dict[int, str]:
+    content = fetch(f"{DASH}?channel=Stable&platform={platform}&num=60")
     data = json.loads(content)
-
     releases = {}
+
     for item in data:
         version = item.get("version")
         if not version:
             continue
-        milestone = int(version.split(".")[0])
-        if milestone not in releases or number(version) > number(releases[milestone]):
+        try:
+            parsed = number(version)
+        except ValueError:
+            continue
+        milestone = parsed[0]
+        if milestone not in releases or parsed > number(releases[milestone]):
             releases[milestone] = version
 
     return releases
@@ -211,21 +382,21 @@ def select(entries: dict[str, dict], tokens: set[str]) -> dict[str, dict]:
     return {
         flag: entry
         for flag, entry in entries.items()
-        if tokens & entry["os"]
+        if entry["os"] & tokens
     }
 
 
 def escape(text: str) -> str:
-    return text.replace("|", "\\|").replace("\n", " ")
+    return text.replace("|", "\\|").replace("\r", " ").replace("\n", " ")
 
 
 def describe(flag: str, entry: dict, strings: dict) -> tuple[str, str]:
-    title_key = entry["title"]
-    desc_key = entry["description"]
-
-    title = strings.get(title_key) or flag
-    desc = strings.get(desc_key) or "No description available."
-
+    title = strings.get(entry["title_key"])
+    desc = strings.get(entry["desc_key"])
+    if title is None:
+        raise ValueError(f"missing title string {entry['title_key']} for {flag}")
+    if desc is None:
+        raise ValueError(f"missing description string {entry['desc_key']} for {flag}")
     return title, desc
 
 
@@ -236,79 +407,70 @@ def report(
     selected: dict[str, dict],
     added: list[str],
 ) -> str:
-    lines = [
-        f"# {platform} {version}",
-        "",
-        f"Total flags: **{len(selected)}** | New flags: **{len(added)}**",
-        "",
-    ]
+    lines = [f"# {platform} {version}", ""]
+    if not added:
+        lines.append("This release added no new flags.")
 
-    if added:
+    for position, flag in enumerate(added):
+        if position:
+            lines.extend(["---", ""])
+        title, body = describe(flag, selected[flag], strings)
         lines.extend([
-            "## New Flags",
+            f"**{escape(title)}**",
             "",
-            "| Flag | Title | Description |",
-            "| :--- | :--- | :--- |",
+            escape(body),
+            "",
+            f"`chrome://flags/#{flag}`",
+            "",
         ])
-        for flag in added:
-            title, desc = describe(flag, selected[flag], strings)
-            lines.append(f"| `{flag}` | {escape(title)} | {escape(desc)} |")
-        lines.append("")
 
-    lines.extend([
-        "## All Flags",
-        "",
-        "| Flag | Title | Description |",
-        "| :--- | :--- | :--- |",
-    ])
-
-    for flag in sorted(selected.keys()):
-        title, desc = describe(flag, selected[flag], strings)
-        lines.append(f"| `{flag}` | {escape(title)} | {escape(desc)} |")
-
-    lines.append("")
-    return "\n".join(lines)
+    return "\n".join(lines).rstrip("\n") + "\n"
 
 
 def main() -> None:
     cache = {}
     title = []
 
-    with ThreadPoolExecutor(max_workers=16) as executor:
-        releases_futures = {
+    with ThreadPoolExecutor(max_workers=len(PLATFORMS)) as executor:
+        release_futures = {
             platform["name"]: executor.submit(
                 stable, platform.get("dash", platform["name"])
             )
             for platform in PLATFORMS
         }
-        releases = {name: future.result() for name, future in releases_futures.items()}
+        releases = {
+            name: future.result()
+            for name, future in release_futures.items()
+        }
 
-        platform_params = []
-        load_tasks = set()
+    platform_params = []
+    load_tasks = set()
 
-        for platform in PLATFORMS:
-            name = platform["name"]
-            newest = releases[name]
-            if not newest:
-                sys.exit(f"no Stable releases listed for {name}")
+    for platform in PLATFORMS:
+        name = platform["name"]
+        newest = releases[name]
+        if not newest:
+            raise ValueError(f"no Stable releases listed for {name}")
 
-            milestone = max(newest)
-            version = newest[milestone]
+        milestone = max(newest)
+        version = newest[milestone]
+        baseline_milestone = milestone - 1
 
-            baseline_milestone = milestone - 1
-            while baseline_milestone not in newest and baseline_milestone > milestone - 8:
-                baseline_milestone -= 1
-            if baseline_milestone not in newest:
-                sys.exit(f"no earlier Stable release to compare {version} against for {name}")
+        while baseline_milestone not in newest and baseline_milestone > milestone - 8:
+            baseline_milestone -= 1
+        if baseline_milestone not in newest:
+            raise ValueError(
+                f"no earlier Stable release to compare {version} against for {name}"
+            )
 
-            baseline = newest[baseline_milestone]
-            source = platform["source"]
+        baseline = newest[baseline_milestone]
+        source = platform["source"]
+        platform_params.append((platform, version, baseline))
+        load_tasks.add(("entries", version, source))
+        load_tasks.add(("entries", baseline, source))
+        load_tasks.add(("strings", version, source))
 
-            platform_params.append((platform, version, baseline))
-            load_tasks.add(("entries", version, source))
-            load_tasks.add(("entries", baseline, source))
-            load_tasks.add(("strings", version, source))
-
+    with ThreadPoolExecutor(max_workers=max(len(load_tasks), 1)) as executor:
         futures = [
             executor.submit(load, kind, version, source, cache)
             for kind, version, source in load_tasks
@@ -322,15 +484,15 @@ def main() -> None:
         tokens = platform["tokens"]
 
         selected = select(load("entries", version, source, cache), tokens)
-        previous = {
-            flag
-            for flag, entry in load("entries", baseline, source, cache).items()
-            if tokens & entry["os"]
-        }
-        added = sorted(set(selected) - previous)
+        previous = select(load("entries", baseline, source, cache), tokens)
+        added = sorted(set(selected) - set(previous))
 
         document = report(
-            name, version, load("strings", version, source, cache), selected, added
+            name,
+            version,
+            load("strings", version, source, cache),
+            selected,
+            added,
         )
         destination = ROOT / f"{name} {version}.md"
         stale = [
@@ -352,4 +514,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as error:
+        print(f"error: {error}", file=sys.stderr)
+        raise
