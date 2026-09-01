@@ -1,4 +1,5 @@
 import base64
+import binascii
 import gzip
 import json
 import re
@@ -12,8 +13,6 @@ from pathlib import Path
 DASH = "https://chromiumdash.appspot.com/fetch_releases"
 RAW = "https://raw.githubusercontent.com/chromium/chromium"
 GITHUB_API = "https://api.github.com/repos/chromium/chromium/contents"
-GITILES_PRIMARY = True
-GITHUB_API_FIRST = True
 ROOT = Path(__file__).resolve().parent
 
 SOURCES = {
@@ -420,38 +419,42 @@ def parse_strings(source: str) -> dict[str, str]:
 
 
 def fetch_chromium(path: str, version: str, optional: bool = False) -> str | None:
-    gitiles_url = f"https://chromium.googlesource.com/chromium/src/+show/{version}/{path}?format=TEXT"
-    raw_url = f"{RAW}/{version}/{path}"
-    api_url = f"{GITHUB_API}/{path}?ref={version}"
+    endpoints = (
+        (
+            f"https://chromium.googlesource.com/chromium/src/+show/{version}/{path}?format=TEXT",
+            "gitiles",
+        ),
+        (f"{RAW}/{version}/{path}", "raw"),
+        (f"{GITHUB_API}/{path}?ref={version}", "api"),
+    )
 
-    def from_gitiles() -> str | None:
-        content = fetch(gitiles_url, optional=True)
-        if content is None:
-            return None
-        encoded = "".join(content.split())
+    for url, kind in endpoints:
         try:
-            decoded = base64.b64decode(encoded, validate=True)
-        except (ValueError, base64.binascii.Error):
-            return None
-        return decoded.decode("utf-8", "replace")
+            content = fetch(url)
+        except urllib.error.HTTPError as error:
+            if error.code == 404:
+                continue
+            raise
 
-    def from_api() -> str | None:
-        content = fetch(api_url, optional=True)
-        if content is None:
-            return None
-        data = json.loads(content)
-        encoded = data.get("content")
-        if not isinstance(encoded, str):
-            return None
-        return base64.b64decode("".join(encoded.split())).decode("utf-8", "replace")
+        if kind == "gitiles":
+            encoded = "".join(content.split())
+            try:
+                return base64.b64decode(encoded, validate=True).decode("utf-8", "replace")
+            except (ValueError, binascii.Error):
+                continue
 
-    text = from_gitiles()
-    if text is None:
-        text = fetch(raw_url, optional=True)
-    if text is None:
-        text = from_api()
-    if text is not None:
-        return text
+        if kind == "api":
+            try:
+                data = json.loads(content)
+                encoded = data.get("content")
+                if not isinstance(encoded, str):
+                    continue
+                return base64.b64decode("".join(encoded.split())).decode("utf-8", "replace")
+            except (json.JSONDecodeError, ValueError, binascii.Error):
+                continue
+
+        return content
+
     if optional:
         return None
     raise FileNotFoundError(f"Chromium source not found: {path}@{version}")
@@ -555,6 +558,30 @@ def report(
     return "\n".join(lines).rstrip("\n") + "\n"
 
 
+def load_strings_for_report(
+    version: str,
+    source: str,
+    added: list[str],
+    cache: dict,
+) -> dict[str, str]:
+    cache_key = ("strings", version, source)
+    strings = load("strings", version, source, cache)
+    entries = load("entries", version, source, cache)
+
+    for _ in range(2):
+        missing = {
+            key
+            for flag in added
+            for key in (entries[flag]["title_key"], entries[flag]["desc_key"])
+            if key not in strings
+        }
+        if not missing:
+            return strings
+        cache.pop(cache_key, None)
+        strings = load("strings", version, source, cache)
+
+    return strings
+
 def main() -> None:
     cache = {}
     title = []
@@ -618,7 +645,7 @@ def main() -> None:
         document = report(
             name,
             version,
-            load("strings", version, source, cache),
+            load_strings_for_report(version, source, added, cache),
             selected,
             added,
         )
