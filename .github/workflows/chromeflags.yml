@@ -14,7 +14,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: chromeflags-final
+  group: chromeflags
   cancel-in-progress: false
 
 jobs:
@@ -24,55 +24,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Add shared iOS flag descriptions
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          parser = Path("chromeflags.py")
-          text = parser.read_text(encoding="utf-8")
-          old = '''    "ios": {\n        "entries": "ios/chrome/browser/flags/about_flags.mm",\n        "strings": [\n            ("ios/chrome/browser/flags/ios_chrome_flag_descriptions.h", False),\n        ],\n    },'''
-          new = '''    "ios": {\n        "entries": "ios/chrome/browser/flags/about_flags.mm",\n        "strings": [\n            ("ios/chrome/browser/flags/ios_chrome_flag_descriptions.h", False),\n            ("components/enterprise/net/core/flag_descriptions.cc", True),\n        ],\n    },'''
-          if old in text:
-              parser.write_text(text.replace(old, new, 1), encoding="utf-8")
-          PY
-
       - name: Syntax check
         run: python3 -m py_compile chromeflags.py
 
       - name: Run unit tests
         run: python3 -m unittest -v test_chromeflags.py
 
-      - name: Verify Chromium flag strings
-        run: |
-          python3 - <<'PY'
-          import chromeflags
-          checks = (
-              ("153.0.8010.12", "components/enterprise/net/core/flag_descriptions.cc", "kEnableDynamicRouteFetchingName"),
-              ("153.0.8010.18", "components/enterprise/net/core/flag_descriptions.cc", "kEnableDynamicRouteFetchingDescription"),
-          )
-          for version, path, key in checks:
-              text = chromeflags.fetch_chromium(path, version)
-              parsed = chromeflags.parse_strings(text)
-              assert key in parsed, f"{key} missing from {path}@{version}"
-          ios = chromeflags.load("strings", "153.0.8010.18", "ios", {})
-          assert "kEnableDynamicRouteFetchingName" in ios
-          assert "kEnableDynamicRouteFetchingDescription" in ios
-          print(f"OK: merged iOS strings={len(ios)}")
-          PY
-
-      - name: Commit parser fix
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add chromeflags.py
-          if ! git diff --staged --quiet; then
-            git commit -m "fix: add shared iOS flag descriptions"
-            git push
-          fi
-
       - name: Update the reports
         run: |
           set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           for attempt in 1 2 3; do
             git fetch origin main
             git rebase origin/main
