@@ -567,7 +567,6 @@ def load_strings_for_report(
     cache_key = ("strings", version, source)
     strings = load("strings", version, source, cache)
     entries = load("entries", version, source, cache)
-
     for _ in range(2):
         missing = {
             key
@@ -579,7 +578,6 @@ def load_strings_for_report(
             return strings
         cache.pop(cache_key, None)
         strings = load("strings", version, source, cache)
-
     return strings
 
 def main() -> None:
@@ -625,13 +623,8 @@ def main() -> None:
         load_tasks.add(("entries", baseline, source))
         load_tasks.add(("strings", version, source))
 
-    with ThreadPoolExecutor(max_workers=max(len(load_tasks), 1)) as executor:
-        futures = [
-            executor.submit(load, kind, version, source, cache)
-            for kind, version, source in load_tasks
-        ]
-        for future in futures:
-            future.result()
+    for kind, version, source in sorted(load_tasks):
+        load(kind, version, source, cache)
 
     for platform, version, baseline in platform_params:
         name = platform["name"]
