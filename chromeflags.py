@@ -12,6 +12,7 @@ from pathlib import Path
 DASH = "https://chromiumdash.appspot.com/fetch_releases"
 RAW = "https://raw.githubusercontent.com/chromium/chromium"
 GITHUB_API = "https://api.github.com/repos/chromium/chromium/contents"
+GITHUB_API_FIRST = True
 ROOT = Path(__file__).resolve().parent
 
 SOURCES = {
@@ -418,32 +419,34 @@ def parse_strings(source: str) -> dict[str, str]:
 
 
 def fetch_chromium(path: str, version: str, optional: bool = False) -> str | None:
+    api_url = f"{GITHUB_API}/{path}?ref={version}"
     raw_url = f"{RAW}/{version}/{path}"
-    try:
-        text = fetch(raw_url, optional=True)
+
+    def from_api() -> str | None:
+        content = fetch(api_url, optional=True)
+        if content is None:
+            return None
+        data = json.loads(content)
+        encoded = data.get("content")
+        if not isinstance(encoded, str):
+            raise ValueError(f"missing base64 content for Chromium source {path}@{version}")
+        return base64.b64decode(encoded).decode("utf-8", "replace")
+
+    if GITHUB_API_FIRST:
+        text = from_api()
         if text is not None:
             return text
-    except urllib.error.HTTPError as error:
-        if error.code != 404:
-            raise
+        text = fetch(raw_url, optional=True)
+    else:
+        text = fetch(raw_url, optional=True)
+        if text is None:
+            text = from_api()
 
-    api_url = f"{GITHUB_API}/{path}?ref={version}"
-    try:
-        content = fetch(api_url, optional=True)
-        if content is not None:
-            data = json.loads(content)
-            encoded = data.get("content")
-            if not isinstance(encoded, str):
-                raise ValueError(f"missing base64 content for Chromium source {path}@{version}")
-            return base64.b64decode(encoded).decode("utf-8", "replace")
-    except urllib.error.HTTPError as error:
-        if error.code != 404:
-            raise
-
+    if text is not None:
+        return text
     if optional:
         return None
     raise FileNotFoundError(f"Chromium source not found: {path}@{version}")
-
 
 def load(kind: str, version: str, source: str, cache: dict) -> dict:
     key = (kind, version, source)
