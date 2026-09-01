@@ -24,37 +24,38 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Repair Chromium source retrieval
+      - name: Finalize parser hardening
         run: |
           python3 - <<'PY'
           from pathlib import Path
           parser = Path("chromeflags.py")
           text = parser.read_text(encoding="utf-8")
-
-          if "import binascii\n" not in text:
-              text = text.replace("import base64\n", "import base64\nimport binascii\n", 1)
           text = text.replace("GITILES_PRIMARY = True\n", "")
           text = text.replace("GITHUB_API_FIRST = True\n", "")
+          if "import binascii\n" not in text:
+              text = text.replace("import base64\n", "import base64\nimport binascii\n", 1)
 
           start = text.index("\ndef fetch_chromium(")
           end = text.index("\ndef load(", start)
-          replacement = '''\ndef fetch_chromium(path: str, version: str, optional: bool = False) -> str | None:\n    endpoints = (\n        (\n            f"https://chromium.googlesource.com/chromium/src/+show/{version}/{path}?format=TEXT",\n            "gitiles",\n        ),\n        (f"{RAW}/{version}/{path}", "raw"),\n        (f"{GITHUB_API}/{path}?ref={version}", "api"),\n    )\n\n    for url, kind in endpoints:\n        try:\n            content = fetch(url)\n        except urllib.error.HTTPError as error:\n            if error.code == 404:\n                continue\n            raise\n\n        if kind == "gitiles":\n            encoded = "".join(content.split())\n            try:\n                return base64.b64decode(encoded, validate=True).decode("utf-8", "replace")\n            except (ValueError, binascii.Error):\n                continue\n\n        if kind == "api":\n            try:\n                data = json.loads(content)\n                encoded = data.get("content")\n                if not isinstance(encoded, str):\n                    continue\n                return base64.b64decode("".join(encoded.split())).decode("utf-8", "replace")\n            except (json.JSONDecodeError, ValueError, binascii.Error):\n                continue\n\n        return content\n\n    if optional:\n        return None\n    raise FileNotFoundError(f"Chromium source not found: {path}@{version}")\n'''
-          text = text[:start] + replacement + text[end:]
+          fetcher = '''\ndef fetch_chromium(path: str, version: str, optional: bool = False) -> str | None:\n    endpoints = (\n        (\n            f"https://chromium.googlesource.com/chromium/src/+show/{version}/{path}?format=TEXT",\n            "gitiles",\n        ),\n        (f"{RAW}/{version}/{path}", "raw"),\n        (f"{GITHUB_API}/{path}?ref={version}", "api"),\n    )\n\n    for url, kind in endpoints:\n        try:\n            content = fetch(url)\n        except urllib.error.HTTPError as error:\n            if error.code == 404:\n                continue\n            raise\n\n        if kind == "gitiles":\n            encoded = "".join(content.split())\n            try:\n                return base64.b64decode(encoded, validate=True).decode("utf-8", "replace")\n            except (ValueError, binascii.Error):\n                continue\n\n        if kind == "api":\n            try:\n                data = json.loads(content)\n                encoded = data.get("content")\n                if not isinstance(encoded, str):\n                    continue\n                return base64.b64decode("".join(encoded.split())).decode("utf-8", "replace")\n            except (json.JSONDecodeError, ValueError, binascii.Error):\n                continue\n\n        return content\n\n    if optional:\n        return None\n    raise FileNotFoundError(f"Chromium source not found: {path}@{version}")\n'''
+          text = text[:start] + fetcher + text[end:]
+
+          old_parallel = '''    with ThreadPoolExecutor(max_workers=max(len(load_tasks), 1)) as executor:\n        futures = [\n            executor.submit(load, kind, version, source, cache)\n            for kind, version, source in load_tasks\n        ]\n        for future in futures:\n            future.result()\n'''
+          if old_parallel in text:
+              text = text.replace(old_parallel, "    for kind, version, source in sorted(load_tasks):\n        load(kind, version, source, cache)\n", 1)
 
           marker = "\ndef main() -> None:\n"
-          helper = '''\ndef load_strings_for_report(\n    version: str,\n    source: str,\n    added: list[str],\n    cache: dict,\n) -> dict[str, str]:\n    cache_key = ("strings", version, source)\n    strings = load("strings", version, source, cache)\n    entries = load("entries", version, source, cache)\n\n    for _ in range(2):\n        missing = {\n            key\n            for flag in added\n            for key in (entries[flag]["title_key"], entries[flag]["desc_key"])\n            if key not in strings\n        }\n        if not missing:\n            return strings\n        cache.pop(cache_key, None)\n        strings = load("strings", version, source, cache)\n\n    return strings\n'''
+          helper = '''\ndef load_strings_for_report(\n    version: str,\n    source: str,\n    added: list[str],\n    cache: dict,\n) -> dict[str, str]:\n    cache_key = ("strings", version, source)\n    strings = load("strings", version, source, cache)\n    entries = load("entries", version, source, cache)\n    for _ in range(2):\n        missing = {\n            key\n            for flag in added\n            for key in (entries[flag]["title_key"], entries[flag]["desc_key"])\n            if key not in strings\n        }\n        if not missing:\n            return strings\n        cache.pop(cache_key, None)\n        strings = load("strings", version, source, cache)\n    return strings\n'''
           if "def load_strings_for_report(" in text:
               helper_start = text.index("\ndef load_strings_for_report(")
               helper_end = text.index(marker, helper_start)
               text = text[:helper_start] + helper + text[helper_end:]
           else:
-              text = text[:text.index(marker)] + helper + text[text.index(marker):]
+              marker_index = text.index(marker)
+              text = text[:marker_index] + helper + text[marker_index:]
 
-          old = '''        document = report(\n            name,\n            version,\n            load("strings", version, source, cache),\n            selected,\n            added,\n        )'''
-          new = '''        document = report(\n            name,\n            version,\n            load_strings_for_report(version, source, added, cache),\n            selected,\n            added,\n        )'''
-          if old not in text:
-              raise SystemExit("report call pattern not found")
-          text = text.replace(old, new, 1)
+          old_report = '''            load("strings", version, source, cache),'''
+          text = text.replace(old_report, '            load_strings_for_report(version, source, added, cache),', 1)
 
           parser.write_text(text, encoding="utf-8")
           PY
@@ -62,7 +63,7 @@ jobs:
           if ! git diff --staged --quiet; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git commit -m "fix: harden Chromium source loading"
+            git commit -m "fix: serialize Chromium source preload"
             git push
           fi
 
