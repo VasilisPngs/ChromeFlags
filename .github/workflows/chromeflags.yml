@@ -28,34 +28,19 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          import re
           parser = Path("chromeflags.py")
           text = parser.read_text(encoding="utf-8")
-          if "GITILES_PRIMARY = True" not in text:
-              if "import base64\n" not in text:
-                  text = text.replace("import gzip\n", "import base64\nimport gzip\n", 1)
-              if 'GITHUB_API = "https://api.github.com/repos/chromium/chromium/contents"\n' not in text:
-                  text = text.replace(
-                      'RAW = "https://raw.githubusercontent.com/chromium/chromium"\n',
-                      'RAW = "https://raw.githubusercontent.com/chromium/chromium"\nGITHUB_API = "https://api.github.com/repos/chromium/chromium/contents"\n',
-                      1,
-                  )
-              text = text.replace(
-                  'GITHUB_API = "https://api.github.com/repos/chromium/chromium/contents"\n',
-                  'GITHUB_API = "https://api.github.com/repos/chromium/chromium/contents"\nGITILES_PRIMARY = True\n',
-                  1,
-              )
-              start = text.index("\ndef fetch_chromium(")
-              end = text.index("\ndef load(", start)
-              replacement = '''\ndef fetch_chromium(path: str, version: str, optional: bool = False) -> str | None:\n    gitiles_url = f"https://chromium.googlesource.com/chromium/src/+/{version}/{path}?format=TEXT"\n    raw_url = f"{RAW}/{version}/{path}"\n    api_url = f"{GITHUB_API}/{path}?ref={version}"\n\n    def from_gitiles() -> str | None:\n        content = fetch(gitiles_url, optional=True)\n        if content is None:\n            return None\n        try:\n            return base64.b64decode(content).decode("utf-8", "replace")\n        except Exception as error:\n            raise ValueError(f"invalid Gitiles encoding for Chromium source {path}@{version}") from error\n\n    def from_api() -> str | None:\n        content = fetch(api_url, optional=True)\n        if content is None:\n            return None\n        data = json.loads(content)\n        encoded = data.get("content")\n        if not isinstance(encoded, str):\n            raise ValueError(f"missing base64 content for Chromium source {path}@{version}")\n        return base64.b64decode(encoded).decode("utf-8", "replace")\n\n    if GITILES_PRIMARY:\n        text = from_gitiles()\n        if text is not None:\n            return text\n        text = fetch(raw_url, optional=True)\n        if text is not None:\n            return text\n        text = from_api()\n    else:\n        text = fetch(raw_url, optional=True)\n        if text is None:\n            text = from_api()\n\n    if text is not None:\n        return text\n    if optional:\n        return None\n    raise FileNotFoundError(f"Chromium source not found: {path}@{version}")\n'''
-              text = text[:start] + replacement + text[end:]
-              parser.write_text(text, encoding="utf-8")
+          start = text.index("\ndef fetch_chromium(")
+          end = text.index("\ndef load(", start)
+          replacement = '''\ndef fetch_chromium(path: str, version: str, optional: bool = False) -> str | None:\n    gitiles_url = f"https://chromium.googlesource.com/chromium/src/+/{version}/{path}?format=TEXT"\n    raw_url = f"{RAW}/{version}/{path}"\n    api_url = f"{GITHUB_API}/{path}?ref={version}"\n\n    def from_gitiles() -> str | None:\n        content = fetch(gitiles_url, optional=True)\n        if content is None:\n            return None\n        encoded = "".join(content.split())\n        try:\n            decoded = base64.b64decode(encoded, validate=True)\n        except (ValueError, base64.binascii.Error):\n            return None\n        return decoded.decode("utf-8", "replace")\n\n    def from_api() -> str | None:\n        content = fetch(api_url, optional=True)\n        if content is None:\n            return None\n        data = json.loads(content)\n        encoded = data.get("content")\n        if not isinstance(encoded, str):\n            return None\n        return base64.b64decode("".join(encoded.split())).decode("utf-8", "replace")\n\n    text = from_gitiles()\n    if text is None:\n        text = fetch(raw_url, optional=True)\n    if text is None:\n        text = from_api()\n    if text is not None:\n        return text\n    if optional:\n        return None\n    raise FileNotFoundError(f"Chromium source not found: {path}@{version}")\n'''
+          text = text[:start] + replacement + text[end:]
+          parser.write_text(text, encoding="utf-8")
           PY
           git add chromeflags.py
           if ! git diff --staged --quiet; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git commit -m "fix: use Chromium Gitiles for source retrieval"
+            git commit -m "fix: validate Chromium source decoding"
             git push
           fi
 
