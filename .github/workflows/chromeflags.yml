@@ -14,7 +14,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: chromeflags
+  group: chromeflags-v2
   cancel-in-progress: false
 
 jobs:
@@ -55,7 +55,6 @@ jobs:
               text = chromeflags.fetch_chromium(path, version)
               parsed = chromeflags.parse_strings(text)
               assert key in parsed, f"{key} missing from {path}@{version}"
-              print(f"OK: {path}@{version}: {key}")
           ios = chromeflags.load("strings", "153.0.8010.18", "ios", {})
           assert "kEnableDynamicRouteFetchingName" in ios
           assert "kEnableDynamicRouteFetchingDescription" in ios
@@ -70,6 +69,6 @@ jobs:
           if ! git diff --staged --quiet; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git commit -m "fix: add shared iOS flag descriptions"
+            git commit -m "flags: $TITLE"
             git push
           fi
