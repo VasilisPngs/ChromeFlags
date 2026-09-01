@@ -475,11 +475,9 @@ def load(kind: str, version: str, source: str, cache: dict) -> dict:
             file_key = ("string_file", version, path)
             parsed = cache.get(file_key)
             if parsed is None:
-                text = fetch_chromium(path, version, optional)
-                if text is None:
-                    parsed = {}
-                else:
-                    parsed = parse_strings(text)
+                content = fetch_chromium(path, version, optional)
+                parsed = {} if content is None else parse_strings(content)
+                if content is not None:
                     cache[file_key] = parsed
             result.update(parsed)
     else:
@@ -488,26 +486,81 @@ def load(kind: str, version: str, source: str, cache: dict) -> dict:
     cache[key] = result
     return result
 
-def load_strings_for_report(
-    version: str,
-    source: str,
-    added: list[str],
-    cache: dict,
-) -> dict[str, str]:
+
+def number(version: str) -> tuple[int, int, int, int]:
+    parts = version.split(".")
+    if len(parts) != 4 or not all(part.isdigit() for part in parts):
+        raise ValueError(f"invalid Chrome version: {version}")
+    return tuple(int(part) for part in parts)
+
+
+def stable(platform: str) -> dict[int, str]:
+    data = json.loads(fetch(f"{DASH}?channel=Stable&platform={platform}&num=60"))
+    releases = {}
+    for item in data:
+        version = item.get("version")
+        if not version:
+            continue
+        try:
+            parsed = number(version)
+        except ValueError:
+            continue
+        milestone = parsed[0]
+        if milestone not in releases or parsed > number(releases[milestone]):
+            releases[milestone] = version
+    return releases
+
+
+def select(entries: dict[str, dict], tokens: set[str]) -> dict[str, dict]:
+    return {flag: entry for flag, entry in entries.items() if entry["os"] & tokens}
+
+
+def escape(text: str) -> str:
+    return text.replace("<", "&lt;").replace(">", "&gt;").replace("\r", " ").replace("\n", " ")
+
+
+def describe(flag: str, entry: dict, strings: dict) -> tuple[str, str]:
+    title = strings.get(entry["title_key"])
+    desc = strings.get(entry["desc_key"])
+    if title is None:
+        raise ValueError(f"missing title string {entry['title_key']} for {flag}")
+    if desc is None:
+        raise ValueError(f"missing description string {entry['desc_key']} for {flag}")
+    return title, desc
+
+
+def report(platform: str, version: str, strings: dict, selected: dict[str, dict], added: list[str]) -> str:
+    lines = [f"# {platform} {version}", ""]
+    if not added:
+        lines.append("This release added no new flags.")
+    for position, flag in enumerate(added):
+        if position:
+            lines.extend(["---", ""])
+        title, body = describe(flag, selected[flag], strings)
+        lines.extend([
+            f"**{escape(title)}**",
+            "",
+            escape(body),
+            "",
+            f"`chrome://flags/#{flag}`",
+            "",
+        ])
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def load_strings_for_report(version: str, source: str, added: list[str], cache: dict) -> dict[str, str]:
     entries = load("entries", version, source, cache)
     result = {}
     for path, optional in SOURCES[source]["strings"]:
         file_key = ("string_file", version, path)
         parsed = cache.get(file_key)
         if parsed is None:
-            text = fetch_chromium(path, version, optional)
-            if text is None:
-                parsed = {}
-            else:
-                parsed = parse_strings(text)
-                cache[file_key] = parsed
+            content = fetch_chromium(path, version, optional)
+            if content is None:
+                continue
+            parsed = parse_strings(content)
+            cache[file_key] = parsed
         result.update(parsed)
-
     missing = {
         key
         for flag in added
@@ -515,9 +568,7 @@ def load_strings_for_report(
         if key not in result
     }
     if missing:
-        raise ValueError(
-            "missing Chromium flag strings: " + ", ".join(sorted(missing))
-        )
+        raise ValueError("missing Chromium flag strings: " + ", ".join(sorted(missing)))
     return result
 
 def main() -> None:
