@@ -24,8 +24,20 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Syntax check
-        run: python3 -m py_compile chromeflags.py
+      - name: Harden C++ string declaration parser
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          parser = Path("chromeflags.py")
+          text = parser.read_text(encoding="utf-8")
+          old = '''STRING_DECL_RE = re.compile(\n    r"(?:inline\\s+|static\\s+|constexpr\\s+|const\\s+)*"\n    r"char\\s+(?P<name>k[A-Za-z0-9_]+)\\s*\\[\\]\\s*=\\s*"\n    r"(?P<value>(?:\\\"(?:\\\\.|[^\\\"\\\\])*\\\"\\s*)+);",\n    re.MULTILINE,\n)'''
+          new = '''STRING_DECL_RE = re.compile(\n    r"\\b(?P<name>k[A-Za-z0-9_]+)\\s*\\[\\]\\s*=\\s*"\n    r"(?P<value>(?:\\\"(?:\\\\.|[^\\\"\\\\])*\\\"\\s*)+);",\n    re.MULTILINE,\n)'''
+          if old not in text:
+              raise SystemExit("expected STRING_DECL_RE not found")
+          text = text.replace(old, new, 1)
+          parser.write_text(text, encoding="utf-8")
+          PY
+          python3 -m py_compile chromeflags.py
 
       - name: Run unit tests
         run: python3 -m unittest -v test_chromeflags.py
@@ -35,19 +47,20 @@ jobs:
           python3 - <<'PY'
           import chromeflags
           version = "153.0.8010.12"
-          cases = [
+          checks = (
               ("components/enterprise/net/core/flag_descriptions.cc", "kEnableDynamicRouteFetchingName"),
+              ("components/enterprise/net/core/flag_descriptions.cc", "kEnableDynamicRouteFetchingDescription"),
               ("chrome/browser/flag_descriptions.h", "kAiOverlayDialogName"),
-          ]
-          for path, key in cases:
+          )
+          for path, key in checks:
               text = chromeflags.fetch_chromium(path, version)
               parsed = chromeflags.parse_strings(text)
               assert key in parsed, f"{key} missing from {path}"
-              print(f"OK: {path}: {key}={parsed[key]!r}")
-          strings = chromeflags.load("strings", version, "desktop", {})
-          assert "kEnableDynamicRouteFetchingName" in strings
-          assert "kEnableDynamicRouteFetchingDescription" in strings
-          print(f"OK: merged desktop strings={len(strings)}")
+              print(f"OK: {path}: {key}")
+          merged = chromeflags.load("strings", version, "desktop", {})
+          assert "kEnableDynamicRouteFetchingName" in merged
+          assert "kEnableDynamicRouteFetchingDescription" in merged
+          print(f"OK: merged desktop strings={len(merged)}")
           PY
 
       - name: Update the reports
@@ -58,6 +71,6 @@ jobs:
           if ! git diff --staged --quiet; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git commit -m "flags: $TITLE"
+            git commit -m "fix: harden C++ string declarations"
             git push
           fi
