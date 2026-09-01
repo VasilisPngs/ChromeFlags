@@ -57,7 +57,7 @@ jobs:
           )
           workflow.write_text(workflow_text, encoding="utf-8")
           PY
-          git add chromeflags.py .github/workflows/chromeflags.yml
+          git add chromeflags.py
           if ! git diff --staged --quiet; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
