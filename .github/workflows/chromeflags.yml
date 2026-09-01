@@ -52,17 +52,14 @@ jobs:
           python3 - <<'PY'
           import chromeflags
           path = "components/enterprise/net/core/flag_descriptions.cc"
-          version = "153.0.8010.12"
-          text = chromeflags.fetch_chromium(path, version)
-          print(f"source_length={len(text) if text is not None else None}")
-          print(f"contains_name={'kEnableDynamicRouteFetchingName' in text if text else False}")
-          if text:
-              for line in text.splitlines():
-                  if "DynamicRouteFetching" in line:
-                      print(line)
-          parsed = chromeflags.parse_strings(text or "")
-          print(f"parsed_name={parsed.get('kEnableDynamicRouteFetchingName')!r}")
-          print(f"parsed_count={len(parsed)}")
+          for version in ("152.0.7977.64", "153.0.8010.12", "153.0.8010.18"):
+              text = chromeflags.fetch_chromium(path, version, optional=True)
+              parsed = chromeflags.parse_strings(text or "")
+              print(f"version={version} length={len(text) if text else None} contains={'kEnableDynamicRouteFetchingName' in (text or '')} parsed={parsed.get('kEnableDynamicRouteFetchingName')!r} count={len(parsed)}")
+          loaded = chromeflags.load("strings", "153.0.8010.12", "desktop", {})
+          print(f"load_count={len(loaded)} loaded_name={loaded.get('kEnableDynamicRouteFetchingName')!r}")
+          entries = chromeflags.load("entries", "153.0.8010.12", "desktop", {})
+          print(f"entry_name={entries.get('enable-dynamic-route-fetching', {}).get('title_key')!r}")
           PY
 
       - name: Update the reports
