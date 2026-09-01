@@ -24,38 +24,31 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Restore complete parser
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          parser = Path("chromeflags.py")
-          text = parser.read_text(encoding="utf-8")
-          if "import binascii\n" not in text:
-              text = text.replace("import base64\n", "import base64\nimport binascii\n", 1)
-
-          fetch_start = text.index("\ndef fetch_chromium(")
-          load_start = text.index("\ndef load(", fetch_start)
-          fetcher = '''\ndef fetch_chromium(path: str, version: str, optional: bool = False) -> str | None:\n    endpoints = (\n        (\n            f"https://chromium.googlesource.com/chromium/src/+show/{version}/{path}?format=TEXT",\n            "gitiles",\n        ),\n        (f"{RAW}/{version}/{path}", "raw"),\n        (f"{GITHUB_API}/{path}?ref={version}", "api"),\n    )\n\n    for url, kind in endpoints:\n        try:\n            content = fetch(url)\n        except urllib.error.HTTPError as error:\n            if error.code == 404:\n                continue\n            raise\n\n        if kind == "gitiles":\n            encoded = "".join(content.split())\n            try:\n                return base64.b64decode(encoded, validate=True).decode("utf-8", "replace")\n            except (ValueError, binascii.Error):\n                continue\n\n        if kind == "api":\n            try:\n                data = json.loads(content)\n                encoded = data.get("content")\n                if not isinstance(encoded, str):\n                    continue\n                return base64.b64decode("".join(encoded.split())).decode("utf-8", "replace")\n            except (json.JSONDecodeError, ValueError, binascii.Error):\n                continue\n\n        return content\n\n    if optional:\n        return None\n    raise FileNotFoundError(f"Chromium source not found: {path}@{version}")\n'''
-          text = text[:fetch_start] + fetcher + text[load_start:]
-
-          load_start = text.index("\ndef load(")
-          main_start = text.index("\ndef main() -> None:", load_start)
-          load_and_helpers = '''\ndef load(kind: str, version: str, source: str, cache: dict) -> dict:\n    key = (kind, version, source)\n    if key in cache:\n        return cache[key]\n    if source not in SOURCES:\n        raise ValueError(f"unknown source group: {source}")\n\n    if kind == "entries":\n        path = SOURCES[source]["entries"]\n        result = parse_entries(fetch_chromium(path, version))\n    elif kind == "strings":\n        result = {}\n        for path, optional in SOURCES[source]["strings"]:\n            file_key = ("string_file", version, path)\n            parsed = cache.get(file_key)\n            if parsed is None:\n                content = fetch_chromium(path, version, optional)\n                parsed = {} if content is None else parse_strings(content)\n                if content is not None:\n                    cache[file_key] = parsed\n            result.update(parsed)\n    else:\n        raise ValueError(f"unknown data kind: {kind}")\n\n    cache[key] = result\n    return result\n\n\ndef number(version: str) -> tuple[int, int, int, int]:\n    parts = version.split(".")\n    if len(parts) != 4 or not all(part.isdigit() for part in parts):\n        raise ValueError(f"invalid Chrome version: {version}")\n    return tuple(int(part) for part in parts)\n\n\ndef stable(platform: str) -> dict[int, str]:\n    data = json.loads(fetch(f"{DASH}?channel=Stable&platform={platform}&num=60"))\n    releases = {}\n    for item in data:\n        version = item.get("version")\n        if not version:\n            continue\n        try:\n            parsed = number(version)\n        except ValueError:\n            continue\n        milestone = parsed[0]\n        if milestone not in releases or parsed > number(releases[milestone]):\n            releases[milestone] = version\n    return releases\n\n\ndef select(entries: dict[str, dict], tokens: set[str]) -> dict[str, dict]:\n    return {flag: entry for flag, entry in entries.items() if entry["os"] & tokens}\n\n\ndef escape(text: str) -> str:\n    return text.replace("<", "&lt;").replace(">", "&gt;").replace("\\r", " ").replace("\\n", " ")\n\n\ndef describe(flag: str, entry: dict, strings: dict) -> tuple[str, str]:\n    title = strings.get(entry["title_key"])\n    desc = strings.get(entry["desc_key"])\n    if title is None:\n        raise ValueError(f"missing title string {entry['title_key']} for {flag}")\n    if desc is None:\n        raise ValueError(f"missing description string {entry['desc_key']} for {flag}")\n    return title, desc\n\n\ndef report(platform: str, version: str, strings: dict, selected: dict[str, dict], added: list[str]) -> str:\n    lines = [f"# {platform} {version}", ""]\n    if not added:\n        lines.append("This release added no new flags.")\n    for position, flag in enumerate(added):\n        if position:\n            lines.extend(["---", ""])\n        title, body = describe(flag, selected[flag], strings)\n        lines.extend([\n            f"**{escape(title)}**",\n            "",\n            escape(body),\n            "",\n            f"`chrome://flags/#{flag}`",\n            "",\n        ])\n    return "\\n".join(lines).rstrip("\\n") + "\\n"\n\n\ndef load_strings_for_report(version: str, source: str, added: list[str], cache: dict) -> dict[str, str]:\n    entries = load("entries", version, source, cache)\n    result = {}\n    for path, optional in SOURCES[source]["strings"]:\n        file_key = ("string_file", version, path)\n        parsed = cache.get(file_key)\n        if parsed is None:\n            content = fetch_chromium(path, version, optional)\n            if content is None:\n                continue\n            parsed = parse_strings(content)\n            cache[file_key] = parsed\n        result.update(parsed)\n    missing = {\n        key\n        for flag in added\n        for key in (entries[flag]["title_key"], entries[flag]["desc_key"])\n        if key not in result\n    }\n    if missing:\n        raise ValueError("missing Chromium flag strings: " + ", ".join(sorted(missing)))\n    return result\n'''
-          text = text[:load_start] + load_and_helpers + text[main_start:]
-          text = text.replace('        load_tasks.add(("strings", version, source))\n', '')
-          parser.write_text(text, encoding="utf-8")
-          PY
-          python3 -m py_compile chromeflags.py
-          git add chromeflags.py
-          if ! git diff --staged --quiet; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git commit -m "fix: restore complete parser implementation"
-            git push
-          fi
+      - name: Syntax check
+        run: python3 -m py_compile chromeflags.py
 
       - name: Run unit tests
         run: python3 -m unittest -v test_chromeflags.py
+
+      - name: Verify Chromium flag strings
+        run: |
+          python3 - <<'PY'
+          import chromeflags
+          version = "153.0.8010.12"
+          cases = [
+              ("components/enterprise/net/core/flag_descriptions.cc", "kEnableDynamicRouteFetchingName"),
+              ("chrome/browser/flag_descriptions.h", "kAiOverlayDialogName"),
+          ]
+          for path, key in cases:
+              text = chromeflags.fetch_chromium(path, version)
+              parsed = chromeflags.parse_strings(text)
+              assert key in parsed, f"{key} missing from {path}"
+              print(f"OK: {path}: {key}={parsed[key]!r}")
+          strings = chromeflags.load("strings", version, "desktop", {})
+          assert "kEnableDynamicRouteFetchingName" in strings
+          assert "kEnableDynamicRouteFetchingDescription" in strings
+          print(f"OK: merged desktop strings={len(strings)}")
+          PY
 
       - name: Update the reports
         run: |
