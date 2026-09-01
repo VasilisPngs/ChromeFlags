@@ -1,5 +1,4 @@
 import gzip
-import json
 import re
 import sys
 import time
@@ -8,80 +7,42 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-DASH = "https://chromiumdash.appspot.com/fetch_releases"
-RAW = "https://raw.githubusercontent.com/chromium/chromium"
-ROOT = Path(__file__).parent
-
-SOURCES = {
-    "desktop": {
-        "entries": "chrome/browser/about_flags.cc",
-        "strings": [
-            ("chrome/browser/flag_descriptions.h", False),
-            ("components/commerce/core/flag_descriptions.cc", True),
-            ("components/contextual_tasks/public/features.cc", True),
-            ("components/enterprise/net/core/flag_descriptions.cc", True),
-            ("components/omnibox/common/omnibox_features.cc", True),
-        ],
-    },
-    "ios": {
-        "entries": "ios/chrome/browser/flags/about_flags.mm",
-        "strings": [
-            ("ios/chrome/browser/flags/ios_chrome_flag_descriptions.h", False),
-        ],
-    },
-}
+ROOT = Path(__file__).resolve().parent
 
 PLATFORMS = [
     {
-        "name": "Windows",
-        "source": "desktop",
-        "tokens": {"kOsWin", "kOsAll", "kOsDesktop", "kOsAura"},
-    },
-    {
-        "name": "macOS",
-        "dash": "Mac",
-        "source": "desktop",
-        "tokens": {"kOsMac", "kOsAll", "kOsDesktop"},
+        "name": "Android",
+        "source": "chrome/browser/about_flags.cc",
+        "tokens": {"kOsAndroid"},
     },
     {
         "name": "Linux",
-        "source": "desktop",
-        "tokens": {"kOsLinux", "kOsAll", "kOsDesktop", "kOsAura"},
+        "source": "chrome/browser/about_flags.cc",
+        "tokens": {"kOsDesktop", "kOsLinux"},
     },
     {
-        "name": "Android",
-        "source": "desktop",
-        "tokens": {"kOsAndroid", "kOsAll"},
+        "name": "Windows",
+        "source": "chrome/browser/about_flags.cc",
+        "tokens": {"kOsDesktop", "kOsWin"},
+    },
+    {
+        "name": "macOS",
+        "source": "chrome/browser/about_flags.cc",
+        "tokens": {"kOsDesktop", "kOsMac"},
     },
     {
         "name": "iOS-iPadOS",
-        "dash": "iOS",
-        "source": "ios",
+        "source": "ios/chrome/browser/flags/about_flags.mm",
         "tokens": {"kOsIos"},
     },
 ]
 
 FEATURE_ENTRIES_RE = re.compile(
-    r"\bkFeatureEntries\b[^=]*=\s*(?:std::to_array<[^;{]+>\s*\(?)?\{"
+    r"\bkFeatureEntries\b\s*(?:\[\]\s*)?=\s*\{", re.MULTILINE
 )
-ENTRY_RE = re.compile(
-    r'\{\s*"(?P<name>[A-Za-z0-9][A-Za-z0-9\-\._]*)"\s*,\s*'
-    r"(?:[A-Za-z0-9_]+::)*flag_descriptions::\s*(?P<title>k[A-Za-z0-9_]+)\s*,\s*"
-    r"(?:[A-Za-z0-9_]+::)*flag_descriptions::\s*(?P<desc>k[A-Za-z0-9_]+)\s*,\s*"
-    r"(?P<os>[A-Za-z0-9_ \t\n\|:<>()]+?)\s*,"
-)
-OS_RE = re.compile(r"kOs[A-Za-z]+")
-STRING_RE = re.compile(
-    r"(?:inline\s+)?(?:constexpr\s+)?(?:const\s+)?char\s+(k[A-Za-z0-9_]+)\s*\[\]\s*=\s*"
-    r'((?:\s*"(?:[^"\\]|\\.)*")+)\s*;',
-    re.S,
-)
-LITERAL_RE = re.compile(r'"((?:[^"\\]|\\.)*)"', re.S)
-ESCAPE_RE = re.compile(r"(?:\\x[0-9a-fA-F]{2})+|\\u([0-9a-fA-F]{4})|\\(.)", re.S)
-ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "\n": ""}
 
 
-def fetch(url, optional=False):
+def fetch(url: str, optional: bool = False) -> str | None:
     headers = {"User-Agent": "chromeflags", "Accept-Encoding": "gzip"}
     for attempt in range(4):
         try:
@@ -99,92 +60,59 @@ def fetch(url, optional=False):
                 time.sleep(3 * (attempt + 1))
                 continue
             raise
-        except OSError:
+        except (urllib.error.URLError, TimeoutError, OSError):
             if attempt < 3:
                 time.sleep(3 * (attempt + 1))
                 continue
             raise
 
 
-def expand(match):
-    run, point, char = match.group(0), match.group(1), match.group(2)
-    if char is not None:
-        return ESCAPES.get(char, char)
-    if point is not None:
-        return chr(int(point, 16))
-    return bytes.fromhex(run.replace("\\x", "")).decode("utf-8", "replace")
+def expand(macro: str, source: str) -> list[str]:
+    pattern = rf"#define\s+{re.escape(macro)}\s*\((.*?)\)"
+    match = re.search(pattern, source)
+    if not match:
+        return []
+    params = [param.strip() for param in match.group(1).split(",")]
+    pattern = rf"\b{re.escape(macro)}\s*\((.*?)\)"
+    matches = re.findall(pattern, source, re.DOTALL)
+    expanded = []
+    for m in matches:
+        args = [arg.strip() for arg in m.split(",")]
+        if len(args) == len(params):
+            expanded.append(dict(zip(params, args)))
+    return expanded
 
 
-def strip_cpp_comments(text):
-    result = []
-    i = 0
-    n = len(text)
-    in_string = False
-    in_single_line = False
-    in_multi_line = False
-
-    while i < n:
-        char = text[i]
-        nxt = text[i + 1] if i + 1 < n else ""
-
-        if in_single_line:
-            if char == "\n":
-                in_single_line = False
-                result.append(char)
-            i += 1
-        elif in_multi_line:
-            if char == "*" and nxt == "/":
-                in_multi_line = False
-                i += 2
-            else:
-                i += 1
-        elif in_string:
-            result.append(char)
-            if char == "\\" and i + 1 < n:
-                result.append(nxt)
-                i += 2
-            elif char == '"':
-                in_string = False
-                i += 1
-            else:
-                i += 1
-        else:
-            if char == "/" and nxt == "/":
-                in_single_line = True
-                i += 2
-            elif char == "/" and nxt == "*":
-                in_multi_line = True
-                i += 2
-            elif char == '"':
-                in_string = True
-                result.append(char)
-                i += 1
-            else:
-                result.append(char)
-                i += 1
-
-    return "".join(result)
+def strip_cpp_comments(text: str) -> str:
+    pattern = r'//.*?$|/\*.*?\*/|"(?:\\.|[^\\"])*"'
+    def replacer(match: re.Match) -> str:
+        s = match.group(0)
+        return s if s.startswith('"') else ('\n' if s.startswith('//') else '')
+    return re.sub(pattern, replacer, text, flags=re.MULTILINE | re.DOTALL)
 
 
-def feature_entries(text):
-    text = strip_cpp_comments(text)
+def feature_entries(text: str) -> str:
     match = FEATURE_ENTRIES_RE.search(text)
     if not match:
         sys.exit("kFeatureEntries initializer not found")
 
+    start_idx = match.start()
+    clean_text = text[:start_idx] + strip_cpp_comments(text[start_idx:])
+
+    match = FEATURE_ENTRIES_RE.search(clean_text)
     start = match.end()
     depth = 1
     index = start
 
-    while index < len(text):
-        char = text[index]
+    while index < len(clean_text):
+        char = clean_text[index]
         if char == '"':
             index += 1
-            while index < len(text):
-                if text[index] == "\\":
+            while index < len(clean_text):
+                if clean_text[index] == "\\":
                     index += 2
                     continue
-                if text[index] == '"':
+                if clean_text[index] == '"':
                     break
                 index += 1
         elif char == "{":
@@ -192,105 +120,164 @@ def feature_entries(text):
         elif char == "}":
             depth -= 1
             if depth == 0:
-                return text[start:index]
+                return clean_text[start:index]
         index += 1
 
     sys.exit("kFeatureEntries initializer is unterminated")
 
 
-def parse_entries(text):
-    body = feature_entries(text)
-    result = {}
-    for match in ENTRY_RE.finditer(body):
-        result[match.group("name")] = {
-            "title_key": match.group("title"),
-            "desc_key": match.group("desc"),
-            "os": set(OS_RE.findall(match.group("os"))),
+def parse_entries(source: str) -> dict[str, dict]:
+    block = feature_entries(source)
+    entries = {}
+    pattern = r'\{\s*"([^"]+)"\s*,\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^\}]+)\}'
+
+    for match in re.finditer(pattern, block):
+        flag, title, description, os_flags = match.groups()
+        os_set = {
+            token.strip()
+            for token in os_flags.replace("|", " ").split()
+            if token.strip()
         }
-    if not result:
-        sys.exit("no valid flag entries parsed from kFeatureEntries")
-    return result
+        entries[flag] = {
+            "title": title.strip(),
+            "description": description.strip(),
+            "os": os_set,
+        }
+
+    return entries
 
 
-def parse_strings(text):
-    text = strip_cpp_comments(text)
-    result = {}
-    for match in STRING_RE.finditer(text):
-        joined = "".join(LITERAL_RE.findall(match.group(2)))
-        result[match.group(1)] = ESCAPE_RE.sub(expand, joined).strip()
-    return result
+def parse_strings(source: str) -> dict[str, str]:
+    strings = {}
+    pattern = r'(?:constexpr\s+char\s+|const\n?char\s+)(\w+)\[\]\s*=\s*"((?:[^"\\]|\\.)*)";'
+
+    for name, value in re.findall(pattern, source):
+        try:
+            decoded = value.encode("utf-8").decode("unicode_escape")
+        except Exception:
+            decoded = value
+        strings[name] = decoded
+
+    return strings
 
 
-def load(kind, version, source, cache):
+def load(kind: str, version: str, source: str, cache: dict) -> dict:
     key = (kind, version, source)
-    data = cache.get(key)
-    if data is None:
-        paths = SOURCES[source][kind]
-        if kind == "entries":
-            data = parse_entries(fetch(f"{RAW}/{version}/{paths}"))
+    if key in cache:
+        return cache[key]
+
+    if kind == "entries":
+        url = f"https://chromium.googlesource.com/chromium/src/+/{version}/{source}?format=TEXT"
+        content = fetch(url)
+        import base64
+        decoded = base64.b64decode(content).decode("utf-8", "replace")
+        result = parse_entries(decoded)
+    elif kind == "strings":
+        url = f"https://chromium.googlesource.com/chromium/str/+/{version}/chrome/app/generated_resources.grd?format=TEXT"
+        content = fetch(url, optional=True)
+        if content:
+            import base64
+            decoded = base64.b64decode(content).decode("utf-8", "replace")
+            result = parse_strings(decoded)
         else:
-            data = {}
-            for path, optional in paths:
-                text = fetch(f"{RAW}/{version}/{path}", optional)
-                if text is not None:
-                    data.update(parse_strings(text))
-        cache[key] = data
-    return data
+            result = {}
+    else:
+        raise ValueError(f"Unknown kind: {kind}")
+
+    cache[key] = result
+    return result
 
 
-def number(version):
-    return tuple(int(part) for part in version.split("."))
+def number(version_str: str) -> tuple[int, ...]:
+    return tuple(int(x) for x in version_str.split("."))
 
 
-def stable(platform):
-    history = json.loads(fetch(f"{DASH}?channel=Stable&platform={platform}&num=60"))
-    newest = {}
-    for item in history:
-        found = newest.get(item["milestone"])
-        if found is None or number(item["version"]) > number(found):
-            newest[item["milestone"]] = item["version"]
-    return newest
+def stable(platform_name: str) -> dict[int, str]:
+    url = f"https://chromiumdash.appspot.com/fetch_releases?platform={platform_name}&channel=Stable&num=100"
+    content = fetch(url)
+    import json
+    data = json.loads(content)
+
+    releases = {}
+    for item in data:
+        version = item.get("version")
+        if not version:
+            continue
+        milestone = int(version.split(".")[0])
+        if milestone not in releases or number(version) > number(releases[milestone]):
+            releases[milestone] = version
+
+    return releases
 
 
-def select(entries, tokens):
-    return {name: entry for name, entry in entries.items() if tokens & entry["os"]}
+def select(entries: dict[str, dict], tokens: set[str]) -> dict[str, dict]:
+    return {
+        flag: entry
+        for flag, entry in entries.items()
+        if tokens & entry["os"]
+    }
 
 
-def escape(text):
-    return text.replace("<", "&lt;").replace(">", "&gt;")
+def escape(text: str) -> str:
+    return text.replace("|", "\\|").replace("\n", " ")
 
 
-def describe(name, entry, strings):
-    title = strings.get(entry["title_key"])
-    body = strings.get(entry["desc_key"])
-    if title is None or body is None:
-        sys.exit(f"no title or description for {name}")
-    return [
-        f"**{escape(title)}**",
+def describe(flag: str, entry: dict, strings: dict) -> tuple[str, str]:
+    title_key = entry["title"]
+    desc_key = entry["description"]
+
+    title = strings.get(title_key) or flag
+    desc = strings.get(desc_key) or "No description available."
+
+    return title, desc
+
+
+def report(
+    platform: str,
+    version: str,
+    strings: dict,
+    selected: dict[str, dict],
+    added: list[str],
+) -> str:
+    lines = [
+        f"# {platform} {version}",
         "",
-        escape(body),
-        "",
-        f"`chrome://flags/#{name}`",
+        f"Total flags: **{len(selected)}** | New flags: **{len(added)}**",
         "",
     ]
 
+    if added:
+        lines.extend([
+            "## New Flags",
+            "",
+            "| Flag | Title | Description |",
+            "| :--- | :--- | :--- |",
+        ])
+        for flag in added:
+            title, desc = describe(flag, selected[flag], strings)
+            lines.append(f"| `{flag}` | {escape(title)} | {escape(desc)} |")
+        lines.append("")
 
-def report(name, version, strings, selected, added):
-    lines = [f"# {name} {version}", ""]
-    if not added:
-        lines.append("This release added no new flags.")
-    for position, flag in enumerate(added):
-        if position:
-            lines.extend(["---", ""])
-        lines.extend(describe(flag, selected[flag], strings))
-    return "\n".join(lines).rstrip("\n") + "\n"
+    lines.extend([
+        "## All Flags",
+        "",
+        "| Flag | Title | Description |",
+        "| :--- | :--- | :--- |",
+    ])
+
+    for flag in sorted(selected.keys()):
+        title, desc = describe(flag, selected[flag], strings)
+        lines.append(f"| `{flag}` | {escape(title)} | {escape(desc)} |")
+
+    lines.append("")
+    return "\n".join(lines)
 
 
-def main():
+def main() -> None:
     cache = {}
     title = []
 
-    with ThreadPoolExecutor(max_workers=len(PLATFORMS)) as executor:
+    with ThreadPoolExecutor(max_workers=16) as executor:
         releases_futures = {
             platform["name"]: executor.submit(
                 stable, platform.get("dash", platform["name"])
@@ -299,33 +286,32 @@ def main():
         }
         releases = {name: future.result() for name, future in releases_futures.items()}
 
-    platform_params = []
-    load_tasks = set()
+        platform_params = []
+        load_tasks = set()
 
-    for platform in PLATFORMS:
-        name = platform["name"]
-        newest = releases[name]
-        if not newest:
-            sys.exit(f"no Stable releases listed for {name}")
+        for platform in PLATFORMS:
+            name = platform["name"]
+            newest = releases[name]
+            if not newest:
+                sys.exit(f"no Stable releases listed for {name}")
 
-        milestone = max(newest)
-        version = newest[milestone]
+            milestone = max(newest)
+            version = newest[milestone]
 
-        baseline_milestone = milestone - 1
-        while baseline_milestone not in newest and baseline_milestone > milestone - 8:
-            baseline_milestone -= 1
-        if baseline_milestone not in newest:
-            sys.exit(f"no earlier Stable release to compare {version} against for {name}")
+            baseline_milestone = milestone - 1
+            while baseline_milestone not in newest and baseline_milestone > milestone - 8:
+                baseline_milestone -= 1
+            if baseline_milestone not in newest:
+                sys.exit(f"no earlier Stable release to compare {version} against for {name}")
 
-        baseline = newest[baseline_milestone]
-        source = platform["source"]
+            baseline = newest[baseline_milestone]
+            source = platform["source"]
 
-        platform_params.append((platform, version, baseline))
-        load_tasks.add(("entries", version, source))
-        load_tasks.add(("entries", baseline, source))
-        load_tasks.add(("strings", version, source))
+            platform_params.append((platform, version, baseline))
+            load_tasks.add(("entries", version, source))
+            load_tasks.add(("entries", baseline, source))
+            load_tasks.add(("strings", version, source))
 
-    with ThreadPoolExecutor(max_workers=max(len(load_tasks), 1)) as executor:
         futures = [
             executor.submit(load, kind, version, source, cache)
             for kind, version, source in load_tasks
