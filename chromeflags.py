@@ -428,10 +428,12 @@ def fetch_chromium(path: str, version: str, optional: bool = False) -> str | Non
         content = fetch(gitiles_url, optional=True)
         if content is None:
             return None
+        encoded = "".join(content.split())
         try:
-            return base64.b64decode(content).decode("utf-8", "replace")
-        except Exception as error:
-            raise ValueError(f"invalid Gitiles encoding for Chromium source {path}@{version}") from error
+            decoded = base64.b64decode(encoded, validate=True)
+        except (ValueError, base64.binascii.Error):
+            return None
+        return decoded.decode("utf-8", "replace")
 
     def from_api() -> str | None:
         content = fetch(api_url, optional=True)
@@ -440,22 +442,14 @@ def fetch_chromium(path: str, version: str, optional: bool = False) -> str | Non
         data = json.loads(content)
         encoded = data.get("content")
         if not isinstance(encoded, str):
-            raise ValueError(f"missing base64 content for Chromium source {path}@{version}")
-        return base64.b64decode(encoded).decode("utf-8", "replace")
+            return None
+        return base64.b64decode("".join(encoded.split())).decode("utf-8", "replace")
 
-    if GITILES_PRIMARY:
-        text = from_gitiles()
-        if text is not None:
-            return text
+    text = from_gitiles()
+    if text is None:
         text = fetch(raw_url, optional=True)
-        if text is not None:
-            return text
+    if text is None:
         text = from_api()
-    else:
-        text = fetch(raw_url, optional=True)
-        if text is None:
-            text = from_api()
-
     if text is not None:
         return text
     if optional:
