@@ -40,30 +40,33 @@ jobs:
           fetcher = '''\ndef fetch_chromium(path: str, version: str, optional: bool = False) -> str | None:\n    endpoints = (\n        (\n            f"https://chromium.googlesource.com/chromium/src/+show/{version}/{path}?format=TEXT",\n            "gitiles",\n        ),\n        (f"{RAW}/{version}/{path}", "raw"),\n        (f"{GITHUB_API}/{path}?ref={version}", "api"),\n    )\n\n    for url, kind in endpoints:\n        try:\n            content = fetch(url)\n        except urllib.error.HTTPError as error:\n            if error.code == 404:\n                continue\n            raise\n\n        if kind == "gitiles":\n            encoded = "".join(content.split())\n            try:\n                return base64.b64decode(encoded, validate=True).decode("utf-8", "replace")\n            except (ValueError, binascii.Error):\n                continue\n\n        if kind == "api":\n            try:\n                data = json.loads(content)\n                encoded = data.get("content")\n                if not isinstance(encoded, str):\n                    continue\n                return base64.b64decode("".join(encoded.split())).decode("utf-8", "replace")\n            except (json.JSONDecodeError, ValueError, binascii.Error):\n                continue\n\n        return content\n\n    if optional:\n        return None\n    raise FileNotFoundError(f"Chromium source not found: {path}@{version}")\n'''
           text = text[:start] + fetcher + text[end:]
 
-          old_parallel = '''    with ThreadPoolExecutor(max_workers=max(len(load_tasks), 1)) as executor:\n        futures = [\n            executor.submit(load, kind, version, source, cache)\n            for kind, version, source in load_tasks\n        ]\n        for future in futures:\n            future.result()\n'''
-          if old_parallel in text:
-              text = text.replace(old_parallel, "    for kind, version, source in sorted(load_tasks):\n        load(kind, version, source, cache)\n", 1)
+          load_start = text.index("\ndef load(kind: str, version: str, source: str, cache: dict) -> dict:")
+          main_start = text.index("\ndef main() -> None:", load_start)
+          load_replacement = '''\ndef load(kind: str, version: str, source: str, cache: dict) -> dict:\n    key = (kind, version, source)\n    if key in cache:\n        return cache[key]\n    if source not in SOURCES:\n        raise ValueError(f"unknown source group: {source}")\n\n    if kind == "entries":\n        path = SOURCES[source]["entries"]\n        result = parse_entries(fetch_chromium(path, version))\n    elif kind == "strings":\n        result = {}\n        for path, optional in SOURCES[source]["strings"]:\n            file_key = ("string_file", version, path)\n            parsed = cache.get(file_key)\n            if parsed is None:\n                text = fetch_chromium(path, version, optional)\n                if text is None:\n                    parsed = {}\n                else:\n                    parsed = parse_strings(text)\n                    cache[file_key] = parsed\n            result.update(parsed)\n    else:\n        raise ValueError(f"unknown data kind: {kind}")\n\n    cache[key] = result\n    return result\n'''
+          text = text[:load_start] + load_replacement + text[main_start:]
 
-          marker = "\ndef main() -> None:\n"
-          helper = '''\ndef load_strings_for_report(\n    version: str,\n    source: str,\n    added: list[str],\n    cache: dict,\n) -> dict[str, str]:\n    cache_key = ("strings", version, source)\n    strings = load("strings", version, source, cache)\n    entries = load("entries", version, source, cache)\n    for _ in range(2):\n        missing = {\n            key\n            for flag in added\n            for key in (entries[flag]["title_key"], entries[flag]["desc_key"])\n            if key not in strings\n        }\n        if not missing:\n            return strings\n        cache.pop(cache_key, None)\n        strings = load("strings", version, source, cache)\n    return strings\n'''
-          if "def load_strings_for_report(" in text:
-              helper_start = text.index("\ndef load_strings_for_report(")
-              helper_end = text.index(marker, helper_start)
-              text = text[:helper_start] + helper + text[helper_end:]
-          else:
-              marker_index = text.index(marker)
-              text = text[:marker_index] + helper + text[marker_index:]
+          helper_start = text.find("\ndef load_strings_for_report(")
+          if helper_start != -1:
+              text = text[:helper_start] + text[text.index("\ndef main() -> None:", helper_start):]
 
-          old_report = '''            load("strings", version, source, cache),'''
-          text = text.replace(old_report, '            load_strings_for_report(version, source, added, cache),', 1)
+          helper = '''\ndef load_strings_for_report(\n    version: str,\n    source: str,\n    added: list[str],\n    cache: dict,\n) -> dict[str, str]:\n    entries = load("entries", version, source, cache)\n    result = {}\n    for path, optional in SOURCES[source]["strings"]:\n        file_key = ("string_file", version, path)\n        parsed = cache.get(file_key)\n        if parsed is None:\n            text = fetch_chromium(path, version, optional)\n            if text is None:\n                parsed = {}\n            else:\n                parsed = parse_strings(text)\n                cache[file_key] = parsed\n        result.update(parsed)\n\n    missing = {\n        key\n        for flag in added\n        for key in (entries[flag]["title_key"], entries[flag]["desc_key"])\n        if key not in result\n    }\n    if missing:\n        raise ValueError(\n            "missing Chromium flag strings: " + ", ".join(sorted(missing))\n        )\n    return result\n'''
+          main_marker = "\ndef main() -> None:\n"
+          marker_index = text.index(main_marker)
+          text = text[:marker_index] + helper + text[marker_index:]
 
+          old = '            load("strings", version, source, cache),'
+          new = '            load_strings_for_report(version, source, added, cache),'
+          text = text.replace(old, new, 1)
+
+          text = text.replace('        load_tasks.add(("strings", version, source))\n', '')
           parser.write_text(text, encoding="utf-8")
           PY
+          python3 -m py_compile chromeflags.py
           git add chromeflags.py
           if ! git diff --staged --quiet; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git commit -m "fix: serialize Chromium source preload"
+            git commit -m "fix: make Chromium string loading deterministic"
             git push
           fi
 
