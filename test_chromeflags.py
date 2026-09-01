@@ -60,7 +60,7 @@ class TestChromeFlags(unittest.TestCase):
             "desktop": {"os": {"kOsDesktop"}},
             "android": {"os": {"kOsAndroid"}},
         }
-        selected = chromeflags.select(entries, {"kOsWindows", "kOsAll", "kOsDesktop"})
+        selected = chromeflags.select(entries, {"kOsWin", "kOsAll", "kOsDesktop"})
         self.assertEqual(set(selected), {"shared", "desktop"})
 
     def test_parse_strings_supports_concatenated_literals_and_escapes(self):
@@ -68,11 +68,18 @@ class TestChromeFlags(unittest.TestCase):
         constexpr char kTitle[] = "First " "Second";
         const char kDescription[] = "Line one\nLine two";
         inline constexpr char kUnicode[] = "A\u00E9";
+        constexpr char kUtf8[] = "A\xC3\xA9";
         '''
         strings = chromeflags.parse_strings(source)
         self.assertEqual(strings["kTitle"], "First Second")
         self.assertEqual(strings["kDescription"], "Line one\nLine two")
         self.assertEqual(strings["kUnicode"], "Aé")
+        self.assertEqual(strings["kUtf8"], "Aé")
+
+    def test_number_validates_chrome_versions(self):
+        self.assertEqual(chromeflags.number("153.0.8010.12"), (153, 0, 8010, 12))
+        with self.assertRaises(ValueError):
+            chromeflags.number("153.8010")
 
     def test_parse_entries_rejects_unparseable_input(self):
         with self.assertRaises(ValueError):
