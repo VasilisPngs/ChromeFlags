@@ -1,3 +1,4 @@
+import base64
 import gzip
 import json
 import re
@@ -10,6 +11,7 @@ from pathlib import Path
 
 DASH = "https://chromiumdash.appspot.com/fetch_releases"
 RAW = "https://raw.githubusercontent.com/chromium/chromium"
+GITHUB_API = "https://api.github.com/repos/chromium/chromium/contents"
 ROOT = Path(__file__).resolve().parent
 
 SOURCES = {
@@ -415,6 +417,34 @@ def parse_strings(source: str) -> dict[str, str]:
     return result
 
 
+def fetch_chromium(path: str, version: str, optional: bool = False) -> str | None:
+    raw_url = f"{RAW}/{version}/{path}"
+    try:
+        text = fetch(raw_url, optional=True)
+        if text is not None:
+            return text
+    except urllib.error.HTTPError as error:
+        if error.code != 404:
+            raise
+
+    api_url = f"{GITHUB_API}/{path}?ref={version}"
+    try:
+        content = fetch(api_url, optional=True)
+        if content is not None:
+            data = json.loads(content)
+            encoded = data.get("content")
+            if not isinstance(encoded, str):
+                raise ValueError(f"missing base64 content for Chromium source {path}@{version}")
+            return base64.b64decode(encoded).decode("utf-8", "replace")
+    except urllib.error.HTTPError as error:
+        if error.code != 404:
+            raise
+
+    if optional:
+        return None
+    raise FileNotFoundError(f"Chromium source not found: {path}@{version}")
+
+
 def load(kind: str, version: str, source: str, cache: dict) -> dict:
     key = (kind, version, source)
     if key in cache:
@@ -425,12 +455,11 @@ def load(kind: str, version: str, source: str, cache: dict) -> dict:
 
     if kind == "entries":
         path = SOURCES[source]["entries"]
-        text = fetch(f"{RAW}/{version}/{path}")
-        result = parse_entries(text)
+        result = parse_entries(fetch_chromium(path, version))
     elif kind == "strings":
         result = {}
         for path, optional in SOURCES[source]["strings"]:
-            text = fetch(f"{RAW}/{version}/{path}", optional)
+            text = fetch_chromium(path, version, optional)
             if text is not None:
                 result.update(parse_strings(text))
     else:
@@ -438,7 +467,6 @@ def load(kind: str, version: str, source: str, cache: dict) -> dict:
 
     cache[key] = result
     return result
-
 
 def number(version: str) -> tuple[int, ...]:
     parts = version.split(".")
