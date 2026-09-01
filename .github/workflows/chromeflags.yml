@@ -1,6 +1,11 @@
 name: chromeflags
 
 on:
+  push:
+    paths:
+      - "chromeflags.py"
+      - "test_chromeflags.py"
+      - ".github/workflows/chromeflags.yml"
   schedule:
     - cron: "17 */3 * * *"
   workflow_dispatch:
@@ -20,7 +25,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Run unit tests
-        run: python3 -m unittest test_chromeflags.py
+        run: python3 -m unittest -v test_chromeflags.py
 
       - name: Update the reports
         run: |
