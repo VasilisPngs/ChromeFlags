@@ -92,14 +92,11 @@ def strip_cpp_comments(text: str) -> str:
 
 
 def feature_entries(text: str) -> str:
-    match = FEATURE_ENTRIES_RE.search(text)
+    clean_text = strip_cpp_comments(text)
+    match = FEATURE_ENTRIES_RE.search(clean_text)
     if not match:
         sys.exit("kFeatureEntries initializer not found")
 
-    start_idx = match.start()
-    clean_text = text[:start_idx] + strip_cpp_comments(text[start_idx:])
-
-    match = FEATURE_ENTRIES_RE.search(clean_text)
     start = match.end()
     depth = 1
     index = start
