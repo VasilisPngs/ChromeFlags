@@ -12,6 +12,7 @@ from pathlib import Path
 DASH = "https://chromiumdash.appspot.com/fetch_releases"
 RAW = "https://raw.githubusercontent.com/chromium/chromium"
 GITHUB_API = "https://api.github.com/repos/chromium/chromium/contents"
+GITILES_PRIMARY = True
 GITHUB_API_FIRST = True
 ROOT = Path(__file__).resolve().parent
 
@@ -419,8 +420,18 @@ def parse_strings(source: str) -> dict[str, str]:
 
 
 def fetch_chromium(path: str, version: str, optional: bool = False) -> str | None:
-    api_url = f"{GITHUB_API}/{path}?ref={version}"
+    gitiles_url = f"https://chromium.googlesource.com/chromium/src/+/{version}/{path}?format=TEXT"
     raw_url = f"{RAW}/{version}/{path}"
+    api_url = f"{GITHUB_API}/{path}?ref={version}"
+
+    def from_gitiles() -> str | None:
+        content = fetch(gitiles_url, optional=True)
+        if content is None:
+            return None
+        try:
+            return base64.b64decode(content).decode("utf-8", "replace")
+        except Exception as error:
+            raise ValueError(f"invalid Gitiles encoding for Chromium source {path}@{version}") from error
 
     def from_api() -> str | None:
         content = fetch(api_url, optional=True)
@@ -432,11 +443,14 @@ def fetch_chromium(path: str, version: str, optional: bool = False) -> str | Non
             raise ValueError(f"missing base64 content for Chromium source {path}@{version}")
         return base64.b64decode(encoded).decode("utf-8", "replace")
 
-    if GITHUB_API_FIRST:
-        text = from_api()
+    if GITILES_PRIMARY:
+        text = from_gitiles()
         if text is not None:
             return text
         text = fetch(raw_url, optional=True)
+        if text is not None:
+            return text
+        text = from_api()
     else:
         text = fetch(raw_url, optional=True)
         if text is None:
