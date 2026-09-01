@@ -24,20 +24,21 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Harden C++ string declaration parser
+      - name: Add shared iOS flag descriptions
         run: |
           python3 - <<'PY'
           from pathlib import Path
           parser = Path("chromeflags.py")
           text = parser.read_text(encoding="utf-8")
-          old = '''STRING_DECL_RE = re.compile(\n    r"(?:inline\\s+|static\\s+|constexpr\\s+|const\\s+)*"\n    r"char\\s+(?P<name>k[A-Za-z0-9_]+)\\s*\\[\\]\\s*=\\s*"\n    r"(?P<value>(?:\\\"(?:\\\\.|[^\\\"\\\\])*\\\"\\s*)+);",\n    re.MULTILINE,\n)'''
-          new = '''STRING_DECL_RE = re.compile(\n    r"\\b(?P<name>k[A-Za-z0-9_]+)\\s*\\[\\]\\s*=\\s*"\n    r"(?P<value>(?:\\\"(?:\\\\.|[^\\\"\\\\])*\\\"\\s*)+);",\n    re.MULTILINE,\n)'''
+          old = '''    "ios": {\n        "entries": "ios/chrome/browser/flags/about_flags.mm",\n        "strings": [\n            ("ios/chrome/browser/flags/ios_chrome_flag_descriptions.h", False),\n        ],\n    },'''
+          new = '''    "ios": {\n        "entries": "ios/chrome/browser/flags/about_flags.mm",\n        "strings": [\n            ("ios/chrome/browser/flags/ios_chrome_flag_descriptions.h", False),\n            ("components/enterprise/net/core/flag_descriptions.cc", True),\n        ],\n    },'''
           if old not in text:
-              raise SystemExit("expected STRING_DECL_RE not found")
-          text = text.replace(old, new, 1)
-          parser.write_text(text, encoding="utf-8")
+              raise SystemExit("expected iOS source mapping not found")
+          parser.write_text(text.replace(old, new, 1), encoding="utf-8")
           PY
-          python3 -m py_compile chromeflags.py
+
+      - name: Syntax check
+        run: python3 -m py_compile chromeflags.py
 
       - name: Run unit tests
         run: python3 -m unittest -v test_chromeflags.py
@@ -46,21 +47,19 @@ jobs:
         run: |
           python3 - <<'PY'
           import chromeflags
-          version = "153.0.8010.12"
           checks = (
-              ("components/enterprise/net/core/flag_descriptions.cc", "kEnableDynamicRouteFetchingName"),
-              ("components/enterprise/net/core/flag_descriptions.cc", "kEnableDynamicRouteFetchingDescription"),
-              ("chrome/browser/flag_descriptions.h", "kAiOverlayDialogName"),
+              ("153.0.8010.12", "components/enterprise/net/core/flag_descriptions.cc", "kEnableDynamicRouteFetchingName"),
+              ("153.0.8010.18", "components/enterprise/net/core/flag_descriptions.cc", "kEnableDynamicRouteFetchingDescription"),
           )
-          for path, key in checks:
+          for version, path, key in checks:
               text = chromeflags.fetch_chromium(path, version)
               parsed = chromeflags.parse_strings(text)
-              assert key in parsed, f"{key} missing from {path}"
-              print(f"OK: {path}: {key}")
-          merged = chromeflags.load("strings", version, "desktop", {})
-          assert "kEnableDynamicRouteFetchingName" in merged
-          assert "kEnableDynamicRouteFetchingDescription" in merged
-          print(f"OK: merged desktop strings={len(merged)}")
+              assert key in parsed, f"{key} missing from {path}@{version}"
+              print(f"OK: {path}@{version}: {key}")
+          ios = chromeflags.load("strings", "153.0.8010.18", "ios", {})
+          assert "kEnableDynamicRouteFetchingName" in ios
+          assert "kEnableDynamicRouteFetchingDescription" in ios
+          print(f"OK: merged iOS strings={len(ios)}")
           PY
 
       - name: Update the reports
@@ -71,6 +70,6 @@ jobs:
           if ! git diff --staged --quiet; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git commit -m "fix: harden C++ string declarations"
+            git commit -m "fix: add shared iOS flag descriptions"
             git push
           fi
