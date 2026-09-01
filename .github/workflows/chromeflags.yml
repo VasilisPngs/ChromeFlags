@@ -47,6 +47,24 @@ jobs:
       - name: Run unit tests
         run: python3 -m unittest -v test_chromeflags.py
 
+      - name: Diagnose Chromium enterprise strings
+        run: |
+          python3 - <<'PY'
+          import chromeflags
+          path = "components/enterprise/net/core/flag_descriptions.cc"
+          version = "153.0.8010.12"
+          text = chromeflags.fetch_chromium(path, version)
+          print(f"source_length={len(text) if text is not None else None}")
+          print(f"contains_name={'kEnableDynamicRouteFetchingName' in text if text else False}")
+          if text:
+              for line in text.splitlines():
+                  if "DynamicRouteFetching" in line:
+                      print(line)
+          parsed = chromeflags.parse_strings(text or "")
+          print(f"parsed_name={parsed.get('kEnableDynamicRouteFetchingName')!r}")
+          print(f"parsed_count={len(parsed)}")
+          PY
+
       - name: Update the reports
         run: |
           TITLE="$(python3 chromeflags.py)"
@@ -54,7 +72,6 @@ jobs:
           git add -A
           if ! git diff --staged --quiet; then
             git config user.name "github-actions[bot]"
-            git config user.email "41898282+VasilisPngs@users.noreply.github.com"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git commit -m "flags: $TITLE"
             git push
