@@ -1,4 +1,4 @@
-# Windows 153.0.8010.12
+# Windows 153.0.8010.27
 
 **AI Overlay Dialog**
 
