@@ -30,6 +30,29 @@ jobs:
       - name: Run unit tests
         run: python3 -m unittest -v test_chromeflags.py
 
+      - name: Verify parser completeness
+        run: |
+          python3 - <<'PY'
+          import chromeflags
+
+          for platform in chromeflags.PLATFORMS:
+              releases = chromeflags.stable(
+                  platform.get("dash", platform["name"])
+              )
+              milestone = max(releases)
+              version = releases[milestone]
+              source = chromeflags.fetch_chromium(
+                  chromeflags.SOURCES[platform["source"]]["entries"], version
+              )
+              blocks = chromeflags.entry_blocks(chromeflags.feature_entries(source))
+              entries = chromeflags.parse_entries(source)
+              if len(blocks) != len(entries):
+                  raise RuntimeError(
+                      f"parser completeness check failed for {platform['name']} "
+                      f"{version}: {len(blocks)} source entries, {len(entries)} parsed"
+                  )
+          PY
+
       - name: Update the reports
         run: |
           set -e
