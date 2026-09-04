@@ -76,6 +76,13 @@ class TestChromeFlags(unittest.TestCase):
         self.assertEqual(strings["kUnicode"], "Aé")
         self.assertEqual(strings["kUtf8"], "Aé")
 
+    def test_decode_cpp_string_supports_surrogate_pairs(self):
+        self.assertEqual(chromeflags.decode_cpp_string(r"\uD83D\uDE00"), "😀")
+
+    def test_decode_cpp_string_replaces_unpaired_surrogates(self):
+        self.assertEqual(chromeflags.decode_cpp_string(r"\uD83D"), "�")
+        self.assertEqual(chromeflags.decode_cpp_string(r"\uDE00"), "�")
+
     def test_number_validates_chrome_versions(self):
         self.assertEqual(chromeflags.number("153.0.8010.12"), (153, 0, 8010, 12))
         with self.assertRaises(ValueError):
