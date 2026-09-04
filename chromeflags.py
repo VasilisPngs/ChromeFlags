@@ -80,7 +80,7 @@ IDENTIFIER_RE = re.compile(r"(?:[A-Za-z_][A-Za-z0-9_]*::)*(k[A-Za-z0-9_]+)\s*$")
 OS_RE = re.compile(r"\bkOs[A-Za-z]+\b")
 
 
-def fetch(url: str, optional: bool = False) -> str | None:
+def fetch(url: str) -> str:
     headers = {"User-Agent": "chromeflags", "Accept-Encoding": "gzip"}
     for attempt in range(4):
         try:
@@ -92,8 +92,6 @@ def fetch(url: str, optional: bool = False) -> str | None:
                     body = gzip.decompress(body)
                 return body.decode("utf-8", "replace")
         except urllib.error.HTTPError as error:
-            if error.code == 404 and optional:
-                return None
             if error.code in (403, 429, 500, 502, 503) and attempt < 3:
                 time.sleep(3 * (attempt + 1))
                 continue
@@ -378,8 +376,30 @@ def decode_cpp_string(value: str) -> str:
         if escape == "u":
             digits = value[index + 2:index + 6]
             if len(digits) == 4 and all(char in "0123456789abcdefABCDEF" for char in digits):
+                codepoint = int(digits, 16)
+                if 0xD800 <= codepoint <= 0xDBFF:
+                    next_index = index + 6
+                    if value[next_index:next_index + 2] == "\\u":
+                        low_digits = value[next_index + 2:next_index + 6]
+                        if len(low_digits) == 4 and all(
+                            char in "0123456789abcdefABCDEF" for char in low_digits
+                        ):
+                            low_codepoint = int(low_digits, 16)
+                            if 0xDC00 <= low_codepoint <= 0xDFFF:
+                                codepoint = 0x10000 + (
+                                    (codepoint - 0xD800) << 10
+                                ) + (low_codepoint - 0xDC00)
+                                flush_bytes()
+                                result.append(chr(codepoint))
+                                index = next_index + 6
+                                continue
+                if not 0xD800 <= codepoint <= 0xDFFF:
+                    flush_bytes()
+                    result.append(chr(codepoint))
+                    index += 6
+                    continue
                 flush_bytes()
-                result.append(chr(int(digits, 16)))
+                result.append("�")
                 index += 6
                 continue
 
@@ -387,7 +407,7 @@ def decode_cpp_string(value: str) -> str:
             digits = value[index + 2:index + 10]
             if len(digits) == 8 and all(char in "0123456789abcdefABCDEF" for char in digits):
                 codepoint = int(digits, 16)
-                if codepoint <= 0x10FFFF:
+                if codepoint <= 0x10FFFF and not 0xD800 <= codepoint <= 0xDFFF:
                     flush_bytes()
                     result.append(chr(codepoint))
                     index += 10
@@ -460,29 +480,34 @@ def fetch_chromium(path: str, version: str, optional: bool = False) -> str | Non
         return None
     raise FileNotFoundError(f"Chromium source not found: {path}@{version}")
 
-def load(kind: str, version: str, source: str, cache: dict) -> dict:
-    key = (kind, version, source)
+
+def load_entries(version: str, source: str, cache: dict) -> dict:
+    key = ("entries", version, source)
+    if key not in cache:
+        if source not in SOURCES:
+            raise ValueError(f"unknown source group: {source}")
+        path = SOURCES[source]["entries"]
+        cache[key] = parse_entries(fetch_chromium(path, version))
+    return cache[key]
+
+
+def load_strings(version: str, source: str, cache: dict) -> dict[str, str]:
+    key = ("strings", version, source)
     if key in cache:
         return cache[key]
     if source not in SOURCES:
         raise ValueError(f"unknown source group: {source}")
 
-    if kind == "entries":
-        path = SOURCES[source]["entries"]
-        result = parse_entries(fetch_chromium(path, version))
-    elif kind == "strings":
-        result = {}
-        for path, optional in SOURCES[source]["strings"]:
-            file_key = ("string_file", version, path)
-            parsed = cache.get(file_key)
-            if parsed is None:
-                content = fetch_chromium(path, version, optional)
-                parsed = {} if content is None else parse_strings(content)
-                if content is not None:
-                    cache[file_key] = parsed
-            result.update(parsed)
-    else:
-        raise ValueError(f"unknown data kind: {kind}")
+    result = {}
+    for path, optional in SOURCES[source]["strings"]:
+        file_key = ("string_file", version, path)
+        parsed = cache.get(file_key)
+        if parsed is None:
+            content = fetch_chromium(path, version, optional)
+            parsed = {} if content is None else parse_strings(content)
+            if content is not None:
+                cache[file_key] = parsed
+        result.update(parsed)
 
     cache[key] = result
     return result
@@ -549,29 +574,6 @@ def report(platform: str, version: str, strings: dict, selected: dict[str, dict]
     return "\n".join(lines).rstrip("\n") + "\n"
 
 
-def load_strings_for_report(version: str, source: str, added: list[str], cache: dict) -> dict[str, str]:
-    entries = load("entries", version, source, cache)
-    result = {}
-    for path, optional in SOURCES[source]["strings"]:
-        file_key = ("string_file", version, path)
-        parsed = cache.get(file_key)
-        if parsed is None:
-            content = fetch_chromium(path, version, optional)
-            if content is None:
-                continue
-            parsed = parse_strings(content)
-            cache[file_key] = parsed
-        result.update(parsed)
-    missing = {
-        key
-        for flag in added
-        for key in (entries[flag]["title_key"], entries[flag]["desc_key"])
-        if key not in result
-    }
-    if missing:
-        raise ValueError("missing Chromium flag strings: " + ", ".join(sorted(missing)))
-    return result
-
 def main() -> None:
     cache = {}
     title = []
@@ -611,25 +613,25 @@ def main() -> None:
         baseline = newest[baseline_milestone]
         source = platform["source"]
         platform_params.append((platform, version, baseline))
-        load_tasks.add(("entries", version, source))
-        load_tasks.add(("entries", baseline, source))
+        load_tasks.add((version, source))
+        load_tasks.add((baseline, source))
 
-    for kind, version, source in sorted(load_tasks):
-        load(kind, version, source, cache)
+    for version, source in sorted(load_tasks):
+        load_entries(version, source, cache)
 
     for platform, version, baseline in platform_params:
         name = platform["name"]
         source = platform["source"]
         tokens = platform["tokens"]
 
-        selected = select(load("entries", version, source, cache), tokens)
-        previous = select(load("entries", baseline, source, cache), tokens)
+        selected = select(load_entries(version, source, cache), tokens)
+        previous = select(load_entries(baseline, source, cache), tokens)
         added = sorted(set(selected) - set(previous))
 
         document = report(
             name,
             version,
-            load_strings_for_report(version, source, added, cache),
+            load_strings(version, source, cache),
             selected,
             added,
         )
