@@ -4,6 +4,7 @@ import gzip
 import json
 import re
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -11,9 +12,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 DASH = "https://chromiumdash.appspot.com/fetch_releases"
-RAW = "https://raw.githubusercontent.com/chromium/chromium"
-GITHUB_API = "https://api.github.com/repos/chromium/chromium/contents"
 ROOT = Path(__file__).resolve().parent
+CACHE_LOCK = threading.Lock()
 
 SOURCES = {
     "desktop": {
@@ -78,6 +78,7 @@ STRING_DECL_RE = re.compile(
 LITERAL_RE = re.compile(r'"((?:[^"\\]|\\.)*)"', re.DOTALL)
 IDENTIFIER_RE = re.compile(r"(?:[A-Za-z_][A-Za-z0-9_]*::)*(k[A-Za-z0-9_]+)\s*$")
 OS_RE = re.compile(r"\bkOs[A-Za-z]+\b")
+FLAG_NAME_RE = re.compile(r'\{\s*"([A-Za-z0-9][A-Za-z0-9._-]*)"\s*,')
 
 
 def fetch(url: str) -> str:
@@ -202,10 +203,8 @@ def split_top_level(text: str, delimiter: str = ",") -> list[str]:
     fields = []
     start = 0
     depth = {"(": 0, "[": 0, "{": 0}
-    pairs = {")": "(",
-        "]": "[",
-        "}": "{",
-    }
+    pairs = {")": "(", "]": "[", "}": "{"}
+    total_depth = 0
     index = 0
     quote = None
 
@@ -225,17 +224,19 @@ def split_top_level(text: str, delimiter: str = ",") -> list[str]:
             continue
         if char in depth:
             depth[char] += 1
+            total_depth += 1
         elif char in pairs:
             opener = pairs[char]
             if depth[opener] == 0:
                 raise ValueError(f"unbalanced delimiter {char}")
             depth[opener] -= 1
-        elif char == delimiter and not any(depth.values()):
+            total_depth -= 1
+        elif char == delimiter and total_depth == 0:
             fields.append(text[start:index].strip())
             start = index + 1
         index += 1
 
-    if quote is not None or any(depth.values()):
+    if quote is not None or total_depth != 0:
         raise ValueError("unterminated entry field")
     fields.append(text[start:].strip())
     return fields
@@ -289,6 +290,7 @@ def string_key(expression: str) -> str:
 
 def parse_entries(source: str) -> dict[str, dict]:
     body = feature_entries(source)
+    expected_flags = set(FLAG_NAME_RE.findall(body))
     result = {}
 
     for block in entry_blocks(body):
@@ -312,6 +314,16 @@ def parse_entries(source: str) -> dict[str, dict]:
             "desc_key": desc_key,
             "os": os_tokens,
         }
+
+    missing = sorted(expected_flags - set(result))
+    extra = sorted(set(result) - expected_flags)
+    if missing or extra:
+        details = []
+        if missing:
+            details.append(f"missing: {', '.join(missing)}")
+        if extra:
+            details.append(f"extra: {', '.join(extra)}")
+        raise ValueError(f"parser completeness check failed: {'; '.join(details)}")
 
     if not result:
         raise ValueError("no valid flag entries parsed from kFeatureEntries")
@@ -399,7 +411,7 @@ def decode_cpp_string(value: str) -> str:
                     index += 6
                     continue
                 flush_bytes()
-                result.append("�")
+                result.append("")
                 index += 6
                 continue
 
@@ -440,76 +452,60 @@ def parse_strings(source: str) -> dict[str, str]:
 
 
 def fetch_chromium(path: str, version: str, optional: bool = False) -> str | None:
-    endpoints = (
-        (
-            f"https://chromium.googlesource.com/chromium/src/+show/{version}/{path}?format=TEXT",
-            "gitiles",
-        ),
-        (f"{RAW}/{version}/{path}", "raw"),
-        (f"{GITHUB_API}/{path}?ref={version}", "api"),
-    )
+    url = f"https://chromium.googlesource.com/chromium/src/+show/{version}/{path}?format=TEXT"
+    try:
+        content = fetch(url)
+    except urllib.error.HTTPError as error:
+        if error.code == 404 and optional:
+            return None
+        raise
 
-    for url, kind in endpoints:
-        try:
-            content = fetch(url)
-        except urllib.error.HTTPError as error:
-            if error.code == 404:
-                continue
-            raise
-
-        if kind == "gitiles":
-            encoded = "".join(content.split())
-            try:
-                return base64.b64decode(encoded, validate=True).decode("utf-8", "replace")
-            except (ValueError, binascii.Error):
-                continue
-
-        if kind == "api":
-            try:
-                data = json.loads(content)
-                encoded = data.get("content")
-                if not isinstance(encoded, str):
-                    continue
-                return base64.b64decode("".join(encoded.split())).decode("utf-8", "replace")
-            except (json.JSONDecodeError, ValueError, binascii.Error):
-                continue
-
-        return content
-
-    if optional:
-        return None
-    raise FileNotFoundError(f"Chromium source not found: {path}@{version}")
+    encoded = "".join(content.split())
+    try:
+        return base64.b64decode(encoded, validate=True).decode("utf-8", "replace")
+    except (ValueError, binascii.Error):
+        if optional:
+            return None
+        raise ValueError(f"failed to decode base64 content from {url}")
 
 
-def load_entries(version: str, source: str, cache: dict) -> dict:
+def load_entries(version: str, source: str, cache: dict) -> dict[str, dict]:
     key = ("entries", version, source)
-    if key not in cache:
-        if source not in SOURCES:
-            raise ValueError(f"unknown source group: {source}")
-        path = SOURCES[source]["entries"]
-        cache[key] = parse_entries(fetch_chromium(path, version))
-    return cache[key]
+    with CACHE_LOCK:
+        if key in cache:
+            return cache[key]
+    if source not in SOURCES:
+        raise ValueError(f"unknown source group: {source}")
+    path = SOURCES[source]["entries"]
+    content = fetch_chromium(path, version)
+    entries = parse_entries(content)
+    with CACHE_LOCK:
+        cache[key] = entries
+    return entries
 
 
 def load_strings(version: str, source: str, cache: dict) -> dict[str, str]:
     key = ("strings", version, source)
-    if key in cache:
-        return cache[key]
+    with CACHE_LOCK:
+        if key in cache:
+            return cache[key]
     if source not in SOURCES:
         raise ValueError(f"unknown source group: {source}")
 
     result = {}
     for path, optional in SOURCES[source]["strings"]:
         file_key = ("string_file", version, path)
-        parsed = cache.get(file_key)
-        if parsed is None:
+        with CACHE_LOCK:
+            cached_file = cache.get(file_key)
+        if cached_file is None:
             content = fetch_chromium(path, version, optional)
-            parsed = {} if content is None else parse_strings(content)
-            if content is not None:
-                cache[file_key] = parsed
-        result.update(parsed)
+            cached_file = {} if content is None else parse_strings(content)
+            with CACHE_LOCK:
+                cache[file_key] = cached_file
+        result.update(cached_file)
 
-    cache[key] = result
+    with CACHE_LOCK:
+        cache[key] = result
     return result
 
 
@@ -549,9 +545,11 @@ def describe(flag: str, entry: dict, strings: dict) -> tuple[str, str]:
     title = strings.get(entry["title_key"])
     desc = strings.get(entry["desc_key"])
     if title is None:
-        raise ValueError(f"missing title string {entry['title_key']} for {flag}")
+        print(f"warning: missing title string {entry['title_key']} for {flag}", file=sys.stderr)
+        title = entry["title_key"]
     if desc is None:
-        raise ValueError(f"missing description string {entry['desc_key']} for {flag}")
+        print(f"warning: missing description string {entry['desc_key']} for {flag}", file=sys.stderr)
+        desc = entry["desc_key"]
     return title, desc
 
 
@@ -575,6 +573,7 @@ def report(platform: str, version: str, strings: dict, selected: dict[str, dict]
 
 
 def main() -> None:
+    force = "--force" in sys.argv
     cache = {}
     title = []
 
@@ -592,6 +591,7 @@ def main() -> None:
 
     platform_params = []
     load_tasks = set()
+    string_tasks = set()
 
     for platform in PLATFORMS:
         name = platform["name"]
@@ -611,15 +611,38 @@ def main() -> None:
             )
 
         baseline = newest[baseline_milestone]
+        destination = ROOT / f"{name} {version}.md"
+        stale = [
+            path
+            for path in ROOT.glob(f"{name} *.md")
+            if path != destination
+        ]
+
+        if not force and destination.exists() and not stale:
+            continue
+
         source = platform["source"]
-        platform_params.append((platform, version, baseline))
+        platform_params.append((platform, version, baseline, destination, stale))
         load_tasks.add((version, source))
         load_tasks.add((baseline, source))
+        string_tasks.add((version, source))
 
-    for version, source in sorted(load_tasks):
-        load_entries(version, source, cache)
+    if not platform_params:
+        print("no flag changes")
+        return
 
-    for platform, version, baseline in platform_params:
+    with ThreadPoolExecutor() as executor:
+        futures = [
+            executor.submit(load_entries, version, source, cache)
+            for version, source in sorted(load_tasks)
+        ] + [
+            executor.submit(load_strings, version, source, cache)
+            for version, source in sorted(string_tasks)
+        ]
+        for future in futures:
+            future.result()
+
+    for platform, version, baseline, destination, stale in platform_params:
         name = platform["name"]
         source = platform["source"]
         tokens = platform["tokens"]
@@ -635,12 +658,6 @@ def main() -> None:
             selected,
             added,
         )
-        destination = ROOT / f"{name} {version}.md"
-        stale = [
-            path
-            for path in ROOT.glob(f"{name} *.md")
-            if path != destination
-        ]
 
         if destination.exists() and not stale:
             if destination.read_text(encoding="utf-8") == document:
