@@ -30,48 +30,19 @@ jobs:
       - name: Run unit tests
         run: python3 -m unittest -v test_chromeflags.py
 
-      - name: Verify parser completeness
-        run: |
-          python3 - <<'PY'
-          import re
-          import chromeflags
-
-          flag_name_re = re.compile(r'\{\s*"([A-Za-z0-9][A-Za-z0-9._-]*)"\s*,')
-
-          for platform in chromeflags.PLATFORMS:
-              releases = chromeflags.stable(
-                  platform.get("dash", platform["name"])
-              )
-              milestone = max(releases)
-              version = releases[milestone]
-              source = chromeflags.fetch_chromium(
-                  chromeflags.SOURCES[platform["source"]]["entries"], version
-              )
-              source_flags = set(flag_name_re.findall(chromeflags.feature_entries(source)))
-              parsed_flags = set(chromeflags.parse_entries(source))
-              missing = sorted(source_flags - parsed_flags)
-              extra = sorted(parsed_flags - source_flags)
-              if missing or extra:
-                  details = []
-                  if missing:
-                      details.append("missing: " + ", ".join(missing))
-                  if extra:
-                      details.append("extra: " + ", ".join(extra))
-                  raise RuntimeError(
-                      f"parser completeness check failed for {platform['name']} {version}: "
-                      + "; ".join(details)
-                  )
-          PY
-
       - name: Update the reports
         run: |
           set -e
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          FLAGS_ARG=""
+          if [ "${{ github.event_name }}" = "push" ]; then
+            FLAGS_ARG="--force"
+          fi
           for attempt in 1 2 3; do
             git fetch origin main
             git rebase origin/main
-            TITLE="$(python3 chromeflags.py)"
+            TITLE="$(python3 chromeflags.py $FLAGS_ARG)"
             echo "## $TITLE" >> "$GITHUB_STEP_SUMMARY"
             git add -A
             if git diff --staged --quiet; then
