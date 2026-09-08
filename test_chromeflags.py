@@ -89,8 +89,8 @@ class TestChromeFlags(unittest.TestCase):
         self.assertEqual(chromeflags.decode_cpp_string(r"\uD83D\uDE00"), "😀")
 
     def test_decode_cpp_string_replaces_unpaired_surrogates(self):
-        self.assertEqual(chromeflags.decode_cpp_string(r"\uD83D"), "")
-        self.assertEqual(chromeflags.decode_cpp_string(r"\uDE00"), "")
+        self.assertEqual(chromeflags.decode_cpp_string(r"\uD83D"), "\ufffd")
+        self.assertEqual(chromeflags.decode_cpp_string(r"\uDE00"), "\ufffd")
 
     def test_describe_fallback_for_missing_keys(self):
         entry = {"title_key": "kMissingTitle", "desc_key": "kMissingDesc", "os": {"kOsAll"}}
