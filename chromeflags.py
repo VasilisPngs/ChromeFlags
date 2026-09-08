@@ -75,7 +75,7 @@ STRING_DECL_RE = re.compile(
     r"(?P<value>(?:\"(?:\\.|[^\"\\])*\"\s*)+);",
     re.MULTILINE,
 )
-LITERAL_RE = re.compile(r'"((?:[^"\\]|\\.)*)"', re.DOTALL)
+LITERAL_RE = re.compile(r'"((?:[^\"\\]|\\.)*)"', re.DOTALL)
 IDENTIFIER_RE = re.compile(r"(?:[A-Za-z_][A-Za-z0-9_]*::)*(k[A-Za-z0-9_]+)\s*$")
 OS_RE = re.compile(r"\bkOs[A-Za-z]+\b")
 FLAG_NAME_RE = re.compile(r'\{\s*"([A-Za-z0-9][A-Za-z0-9._-]*)"\s*,')
@@ -411,7 +411,7 @@ def decode_cpp_string(value: str) -> str:
                     index += 6
                     continue
                 flush_bytes()
-                result.append("")
+                result.append("\ufffd")
                 index += 6
                 continue
 
