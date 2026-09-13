@@ -160,11 +160,11 @@ Enables the reporting of destination tab titles in Chrome Enterprise URL navigat
 
 ---
 
-**Gemma 4 for Built-in AI**
+**Force Enterprise Isolated Mode**
 
-Enables all built-in AI APIs (Prompt, Summarizer, Writer, etc.) to use the Gemma 4 model.
+Force Enterprise Isolated Mode to replace Incognito mode.
 
-`chrome://flags/#gemma4-for-built-in-ai`
+`chrome://flags/#force-enterprise-isolated-mode`
 
 ---
 

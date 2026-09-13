@@ -1,5 +1,4 @@
 import base64
-import binascii
 import gzip
 import json
 import re
@@ -14,12 +13,19 @@ from pathlib import Path
 DASH = "https://chromiumdash.appspot.com/fetch_releases"
 ROOT = Path(__file__).resolve().parent
 CACHE_LOCK = threading.Lock()
+RETRY_CODES = frozenset({403, 429, 500, 502, 503})
 
 SOURCES = {
     "desktop": {
         "entries": "chrome/browser/about_flags.cc",
+        "names": [
+            "base/base_switches.h",
+            "chrome/browser/site_isolation/about_flags.h",
+            "components/ui_devtools/switches.cc",
+        ],
         "strings": [
             ("chrome/browser/flag_descriptions.h", False),
+            ("chrome/browser/ui/tabs/tab_group_home/constants.cc", True),
             ("components/commerce/core/flag_descriptions.cc", True),
             ("components/contextual_tasks/public/features.cc", True),
             ("components/enterprise/net/core/flag_descriptions.cc", True),
@@ -28,8 +34,10 @@ SOURCES = {
     },
     "ios": {
         "entries": "ios/chrome/browser/flags/about_flags.mm",
+        "names": [],
         "strings": [
             ("ios/chrome/browser/flags/ios_chrome_flag_descriptions.h", False),
+            ("components/commerce/core/flag_descriptions.cc", True),
             ("components/enterprise/net/core/flag_descriptions.cc", True),
         ],
     },
@@ -61,7 +69,7 @@ PLATFORMS = [
         "name": "iOS-iPadOS",
         "dash": "iOS",
         "source": "ios",
-        "tokens": {"kOsIos", "kOsAll"},
+        "tokens": {"kOsIos"},
     },
 ]
 
@@ -72,37 +80,50 @@ FEATURE_ENTRIES_RE = re.compile(
 STRING_DECL_RE = re.compile(
     r"(?:inline\s+|static\s+|constexpr\s+|const\s+)*"
     r"char\s+(?P<name>k[A-Za-z0-9_]+)\s*\[\]\s*=\s*"
-    r"(?P<value>(?:\"(?:\\.|[^\"\\])*\"\s*)+);",
+    r'(?P<value>(?:"(?:\\.|[^"\\])*"\s*)+);',
     re.MULTILINE,
 )
-LITERAL_RE = re.compile(r'"((?:[^\"\\]|\\.)*)"', re.DOTALL)
+LITERAL_RE = re.compile(r'"((?:[^"\\]|\\.)*)"', re.DOTALL)
 IDENTIFIER_RE = re.compile(r"(?:[A-Za-z_][A-Za-z0-9_]*::)*(k[A-Za-z0-9_]+)\s*$")
 OS_RE = re.compile(r"\bkOs[A-Za-z]+\b")
-FLAG_NAME_RE = re.compile(r'\{\s*"([A-Za-z0-9][A-Za-z0-9._-]*)"\s*,')
+FLAG_LITERAL_RE = re.compile(r'"([A-Za-z0-9][A-Za-z0-9._-]*)"')
+
+HEX_DIGITS = "0123456789abcdefABCDEF"
+SIMPLE_ESCAPES = {
+    "a": "\a",
+    "b": "\b",
+    "f": "\f",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+    "v": "\v",
+    "\\": "\\",
+    '"': '"',
+    "'": "'",
+    "?": "?",
+}
 
 
 def fetch(url: str) -> str:
     headers = {"User-Agent": "chromeflags", "Accept-Encoding": "gzip"}
-    for attempt in range(4):
+    request = urllib.request.Request(url, headers=headers)
+    attempt = 0
+
+    while True:
         try:
-            request = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(request, timeout=30) as response:
                 body = response.read()
-                encoding = response.headers.get("Content-Encoding", "")
-                if encoding.lower() == "gzip":
+                if response.headers.get("Content-Encoding", "").lower() == "gzip":
                     body = gzip.decompress(body)
                 return body.decode("utf-8", "replace")
         except urllib.error.HTTPError as error:
-            if error.code in (403, 429, 500, 502, 503) and attempt < 3:
-                time.sleep(3 * (attempt + 1))
-                continue
-            raise
+            if attempt == 3 or error.code not in RETRY_CODES:
+                raise
         except (urllib.error.URLError, TimeoutError, OSError):
-            if attempt < 3:
-                time.sleep(3 * (attempt + 1))
-                continue
-            raise
-    raise RuntimeError(f"failed to fetch {url}")
+            if attempt == 3:
+                raise
+        attempt += 1
+        time.sleep(3 * attempt)
 
 
 def strip_cpp_comments(text: str) -> str:
@@ -164,9 +185,8 @@ def strip_cpp_comments(text: str) -> str:
     return "".join(result)
 
 
-def feature_entries(text: str) -> str:
-    clean_text = strip_cpp_comments(text)
-    match = FEATURE_ENTRIES_RE.search(clean_text)
+def feature_entries(clean: str) -> str:
+    match = FEATURE_ENTRIES_RE.search(clean)
     if not match:
         raise ValueError("kFeatureEntries initializer not found")
 
@@ -174,16 +194,16 @@ def feature_entries(text: str) -> str:
     depth = 1
     index = start
 
-    while index < len(clean_text):
-        char = clean_text[index]
+    while index < len(clean):
+        char = clean[index]
         if char in ('"', "'"):
             quote = char
             index += 1
-            while index < len(clean_text):
-                if clean_text[index] == "\\":
+            while index < len(clean):
+                if clean[index] == "\\":
                     index += 2
                     continue
-                if clean_text[index] == quote:
+                if clean[index] == quote:
                     index += 1
                     break
                 index += 1
@@ -193,13 +213,13 @@ def feature_entries(text: str) -> str:
         elif char == "}":
             depth -= 1
             if depth == 0:
-                return clean_text[start:index]
+                return clean[start:index]
         index += 1
 
     raise ValueError("kFeatureEntries initializer is unterminated")
 
 
-def split_top_level(text: str, delimiter: str = ",") -> list[str]:
+def split_top_level(text: str) -> list[str]:
     fields = []
     start = 0
     depth = {"(": 0, "[": 0, "{": 0}
@@ -231,7 +251,7 @@ def split_top_level(text: str, delimiter: str = ",") -> list[str]:
                 raise ValueError(f"unbalanced delimiter {char}")
             depth[opener] -= 1
             total_depth -= 1
-        elif char == delimiter and total_depth == 0:
+        elif char == "," and total_depth == 0:
             fields.append(text[start:index].strip())
             start = index + 1
         index += 1
@@ -288,45 +308,47 @@ def string_key(expression: str) -> str:
     return match.group(1)
 
 
-def parse_entries(source: str) -> dict[str, dict]:
-    body = feature_entries(source)
-    expected_flags = set(FLAG_NAME_RE.findall(body))
-    result = {}
+def flag_name(expression: str, names: dict[str, str]) -> str | None:
+    match = FLAG_LITERAL_RE.fullmatch(expression)
+    if match:
+        return match.group(1)
+    return names.get("".join(expression.split()).rpartition("::")[2])
 
-    for block in entry_blocks(body):
+
+def parse_entries(clean: str, names: dict[str, str]) -> dict[str, dict]:
+    pool = dict(names)
+    pool.update(parse_strings(clean))
+
+    result: dict[str, dict] = {}
+    unparsed = []
+
+    for block in entry_blocks(feature_entries(clean)):
         fields = split_top_level(block)
         if len(fields) < 4:
+            unparsed.append(block)
             continue
 
-        flag_match = re.fullmatch(r'"([A-Za-z0-9][A-Za-z0-9._-]*)"', fields[0])
-        if not flag_match:
-            continue
-
-        flag = flag_match.group(1)
-        title_key = string_key(fields[1])
-        desc_key = string_key(fields[2])
         os_tokens = set(OS_RE.findall(fields[3]))
-        if not os_tokens:
+        flag = flag_name(fields[0], pool)
+        if flag is None or not os_tokens:
+            unparsed.append(block)
             continue
 
-        result[flag] = {
-            "title_key": title_key,
-            "desc_key": desc_key,
-            "os": os_tokens,
-        }
+        entry = result.get(flag)
+        if entry is None:
+            result[flag] = {
+                "title_key": string_key(fields[1]),
+                "desc_key": string_key(fields[2]),
+                "os": os_tokens,
+            }
+        else:
+            entry["os"] |= os_tokens
 
-    missing = sorted(expected_flags - set(result))
-    extra = sorted(set(result) - expected_flags)
-    if missing or extra:
-        details = []
-        if missing:
-            details.append(f"missing: {', '.join(missing)}")
-        if extra:
-            details.append(f"extra: {', '.join(extra)}")
-        raise ValueError(f"parser completeness check failed: {'; '.join(details)}")
-
+    if unparsed:
+        details = "; ".join(" ".join(block.split())[:80] for block in unparsed)
+        raise ValueError(f"unparsed flag entries: {details}")
     if not result:
-        raise ValueError("no valid flag entries parsed from kFeatureEntries")
+        raise ValueError("no flag entries parsed from kFeatureEntries")
     return result
 
 
@@ -353,28 +375,15 @@ def decode_cpp_string(value: str) -> str:
             break
 
         escape = value[index + 1]
-        simple = {
-            "a": "\a",
-            "b": "\b",
-            "f": "\f",
-            "n": "\n",
-            "r": "\r",
-            "t": "\t",
-            "v": "\v",
-            "\\": "\\",
-            "\"": "\"",
-            "'": "'",
-            "?": "?",
-        }
-        if escape in simple:
+        if escape in SIMPLE_ESCAPES:
             flush_bytes()
-            result.append(simple[escape])
+            result.append(SIMPLE_ESCAPES[escape])
             index += 2
             continue
 
         if escape == "x":
             cursor = index + 2
-            while cursor < len(value) and value[cursor] in "0123456789abcdefABCDEF":
+            while cursor < len(value) and value[cursor] in HEX_DIGITS:
                 cursor += 1
             if cursor == index + 2:
                 flush_bytes()
@@ -387,14 +396,14 @@ def decode_cpp_string(value: str) -> str:
 
         if escape == "u":
             digits = value[index + 2:index + 6]
-            if len(digits) == 4 and all(char in "0123456789abcdefABCDEF" for char in digits):
+            if len(digits) == 4 and all(char in HEX_DIGITS for char in digits):
                 codepoint = int(digits, 16)
                 if 0xD800 <= codepoint <= 0xDBFF:
                     next_index = index + 6
                     if value[next_index:next_index + 2] == "\\u":
                         low_digits = value[next_index + 2:next_index + 6]
                         if len(low_digits) == 4 and all(
-                            char in "0123456789abcdefABCDEF" for char in low_digits
+                            char in HEX_DIGITS for char in low_digits
                         ):
                             low_codepoint = int(low_digits, 16)
                             if 0xDC00 <= low_codepoint <= 0xDFFF:
@@ -405,19 +414,14 @@ def decode_cpp_string(value: str) -> str:
                                 result.append(chr(codepoint))
                                 index = next_index + 6
                                 continue
-                if not 0xD800 <= codepoint <= 0xDFFF:
-                    flush_bytes()
-                    result.append(chr(codepoint))
-                    index += 6
-                    continue
                 flush_bytes()
-                result.append("\ufffd")
+                result.append("\ufffd" if 0xD800 <= codepoint <= 0xDFFF else chr(codepoint))
                 index += 6
                 continue
 
         if escape == "U":
             digits = value[index + 2:index + 10]
-            if len(digits) == 8 and all(char in "0123456789abcdefABCDEF" for char in digits):
+            if len(digits) == 8 and all(char in HEX_DIGITS for char in digits):
                 codepoint = int(digits, 16)
                 if codepoint <= 0x10FFFF and not 0xD800 <= codepoint <= 0xDFFF:
                     flush_bytes()
@@ -441,14 +445,14 @@ def decode_cpp_string(value: str) -> str:
     return "".join(result)
 
 
-def parse_strings(source: str) -> dict[str, str]:
-    result = {}
-    for match in STRING_DECL_RE.finditer(strip_cpp_comments(source)):
-        literals = LITERAL_RE.findall(match.group("value"))
-        result[match.group("name")] = "".join(
-            decode_cpp_string(literal) for literal in literals
+def parse_strings(clean: str) -> dict[str, str]:
+    return {
+        match.group("name"): "".join(
+            decode_cpp_string(literal)
+            for literal in LITERAL_RE.findall(match.group("value"))
         )
-    return result
+        for match in STRING_DECL_RE.finditer(clean)
+    }
 
 
 def fetch_chromium(path: str, version: str, optional: bool = False) -> str | None:
@@ -460,13 +464,24 @@ def fetch_chromium(path: str, version: str, optional: bool = False) -> str | Non
             return None
         raise
 
-    encoded = "".join(content.split())
     try:
-        return base64.b64decode(encoded, validate=True).decode("utf-8", "replace")
-    except (ValueError, binascii.Error):
+        return base64.b64decode("".join(content.split()), validate=True).decode("utf-8", "replace")
+    except ValueError:
         if optional:
             return None
         raise ValueError(f"failed to decode base64 content from {url}")
+
+
+def declarations(path: str, version: str, optional: bool, cache: dict) -> dict[str, str]:
+    key = ("file", version, path)
+    with CACHE_LOCK:
+        cached = cache.get(key)
+    if cached is None:
+        content = fetch_chromium(path, version, optional)
+        cached = {} if content is None else parse_strings(strip_cpp_comments(content))
+        with CACHE_LOCK:
+            cache[key] = cached
+    return cached
 
 
 def load_entries(version: str, source: str, cache: dict) -> dict[str, dict]:
@@ -474,42 +489,27 @@ def load_entries(version: str, source: str, cache: dict) -> dict[str, dict]:
     with CACHE_LOCK:
         if key in cache:
             return cache[key]
-    if source not in SOURCES:
-        raise ValueError(f"unknown source group: {source}")
-    path = SOURCES[source]["entries"]
-    content = fetch_chromium(path, version)
-    entries = parse_entries(content)
+
+    group = SOURCES[source]
+    names = {}
+    for path in group["names"]:
+        names.update(declarations(path, version, False, cache))
+    clean = strip_cpp_comments(fetch_chromium(group["entries"], version))
+    entries = parse_entries(clean, names)
+
     with CACHE_LOCK:
         cache[key] = entries
     return entries
 
 
 def load_strings(version: str, source: str, cache: dict) -> dict[str, str]:
-    key = ("strings", version, source)
-    with CACHE_LOCK:
-        if key in cache:
-            return cache[key]
-    if source not in SOURCES:
-        raise ValueError(f"unknown source group: {source}")
-
     result = {}
     for path, optional in SOURCES[source]["strings"]:
-        file_key = ("string_file", version, path)
-        with CACHE_LOCK:
-            cached_file = cache.get(file_key)
-        if cached_file is None:
-            content = fetch_chromium(path, version, optional)
-            cached_file = {} if content is None else parse_strings(content)
-            with CACHE_LOCK:
-                cache[file_key] = cached_file
-        result.update(cached_file)
-
-    with CACHE_LOCK:
-        cache[key] = result
+        result.update(declarations(path, version, optional, cache))
     return result
 
 
-def number(version: str) -> tuple[int, int, int, int]:
+def number(version: str) -> tuple[int, ...]:
     parts = version.split(".")
     if len(parts) != 4 or not all(part.isdigit() for part in parts):
         raise ValueError(f"invalid Chrome version: {version}")
@@ -538,7 +538,13 @@ def select(entries: dict[str, dict], tokens: set[str]) -> dict[str, dict]:
 
 
 def escape(text: str) -> str:
-    return text.replace("<", "&lt;").replace(">", "&gt;").replace("\r", " ").replace("\n", " ")
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\r", " ")
+        .replace("\n", " ")
+    )
 
 
 def describe(flag: str, entry: dict, strings: dict) -> tuple[str, str]:
@@ -553,14 +559,14 @@ def describe(flag: str, entry: dict, strings: dict) -> tuple[str, str]:
     return title, desc
 
 
-def report(platform: str, version: str, strings: dict, selected: dict[str, dict], added: list[str]) -> str:
+def report(platform: str, version: str, strings: dict, added: dict[str, dict]) -> str:
     lines = [f"# {platform} {version}", ""]
     if not added:
         lines.append("This release added no new flags.")
-    for position, flag in enumerate(added):
+    for position, (flag, entry) in enumerate(added.items()):
         if position:
             lines.extend(["---", ""])
-        title, body = describe(flag, selected[flag], strings)
+        title, body = describe(flag, entry, strings)
         lines.extend([
             f"**{escape(title)}**",
             "",
@@ -575,22 +581,19 @@ def report(platform: str, version: str, strings: dict, selected: dict[str, dict]
 def main() -> None:
     force = "--force" in sys.argv
     cache = {}
-    title = []
+    summary = []
 
     with ThreadPoolExecutor(max_workers=len(PLATFORMS)) as executor:
-        release_futures = {
+        releases = {
             platform["name"]: executor.submit(
                 stable, platform.get("dash", platform["name"])
             )
             for platform in PLATFORMS
         }
-        releases = {
-            name: future.result()
-            for name, future in release_futures.items()
-        }
+        releases = {name: future.result() for name, future in releases.items()}
 
-    platform_params = []
-    load_tasks = set()
+    pending = []
+    entry_tasks = set()
     string_tasks = set()
 
     for platform in PLATFORMS:
@@ -612,29 +615,24 @@ def main() -> None:
 
         baseline = newest[baseline_milestone]
         destination = ROOT / f"{name} {version}.md"
-        stale = [
-            path
-            for path in ROOT.glob(f"{name} *.md")
-            if path != destination
-        ]
+        stale = [path for path in ROOT.glob(f"{name} *.md") if path != destination]
 
         if not force and destination.exists() and not stale:
             continue
 
         source = platform["source"]
-        platform_params.append((platform, version, baseline, destination, stale))
-        load_tasks.add((version, source))
-        load_tasks.add((baseline, source))
+        pending.append((platform, version, baseline, destination, stale))
+        entry_tasks.update({(version, source), (baseline, source)})
         string_tasks.add((version, source))
 
-    if not platform_params:
+    if not pending:
         print("no flag changes")
         return
 
     with ThreadPoolExecutor() as executor:
         futures = [
             executor.submit(load_entries, version, source, cache)
-            for version, source in sorted(load_tasks)
+            for version, source in sorted(entry_tasks)
         ] + [
             executor.submit(load_strings, version, source, cache)
             for version, source in sorted(string_tasks)
@@ -642,22 +640,16 @@ def main() -> None:
         for future in futures:
             future.result()
 
-    for platform, version, baseline, destination, stale in platform_params:
+    for platform, version, baseline, destination, stale in pending:
         name = platform["name"]
         source = platform["source"]
         tokens = platform["tokens"]
 
         selected = select(load_entries(version, source, cache), tokens)
         previous = select(load_entries(baseline, source, cache), tokens)
-        added = sorted(set(selected) - set(previous))
+        added = {flag: selected[flag] for flag in sorted(set(selected) - set(previous))}
 
-        document = report(
-            name,
-            version,
-            load_strings(version, source, cache),
-            selected,
-            added,
-        )
+        document = report(name, version, load_strings(version, source, cache), added)
 
         if destination.exists() and not stale:
             if destination.read_text(encoding="utf-8") == document:
@@ -666,9 +658,9 @@ def main() -> None:
         for path in stale:
             path.unlink()
         destination.write_text(document, encoding="utf-8")
-        title.append(f"{name} {version} +{len(added)}")
+        summary.append(f"{name} {version} +{len(added)}")
 
-    print(" / ".join(title) or "no flag changes")
+    print(" / ".join(summary) or "no flag changes")
 
 
 if __name__ == "__main__":

@@ -2,6 +2,8 @@ name: chromeflags
 
 on:
   push:
+    branches:
+      - main
     paths:
       - "chromeflags.py"
       - "test_chromeflags.py"
@@ -24,9 +26,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Syntax check
-        run: python3 -m py_compile chromeflags.py
-
       - name: Run unit tests
         run: python3 -m unittest -v test_chromeflags.py
 
@@ -36,20 +35,21 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           FLAGS_ARG=""
-          if [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "${{ github.event_name }}" != "schedule" ]; then
             FLAGS_ARG="--force"
           fi
           for attempt in 1 2 3; do
             git fetch origin main
             git rebase origin/main
             TITLE="$(python3 chromeflags.py $FLAGS_ARG)"
-            echo "## $TITLE" >> "$GITHUB_STEP_SUMMARY"
             git add -A
             if git diff --staged --quiet; then
+              echo "## $TITLE" >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
             git commit -m "flags: $TITLE"
             if git push; then
+              echo "## $TITLE" >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
             git reset --hard origin/main
