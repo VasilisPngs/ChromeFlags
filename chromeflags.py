@@ -10,7 +10,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-DASH = "https://chromiumdash.appspot.com/fetch_releases"
+DASH = "https://chromiumdash.appspot.com"
 ROOT = Path(__file__).resolve().parent
 CACHE_LOCK = threading.Lock()
 RETRY_CODES = frozenset({403, 429, 500, 502, 503})
@@ -516,8 +516,16 @@ def number(version: str) -> tuple[int, ...]:
     return tuple(int(part) for part in parts)
 
 
+def stable_milestone() -> int:
+    data = json.loads(fetch(f"{DASH}/fetch_milestones?num=8"))
+    current = [item["milestone"] for item in data if item.get("schedule_phase") == "stable"]
+    if not current:
+        raise ValueError("no milestone is in the Stable phase")
+    return max(current)
+
+
 def stable(platform: str) -> dict[int, str]:
-    data = json.loads(fetch(f"{DASH}?channel=Stable&platform={platform}&num=60"))
+    data = json.loads(fetch(f"{DASH}/fetch_releases?channel=Stable&platform={platform}&num=60"))
     releases = {}
     for item in data:
         version = item.get("version")
@@ -583,7 +591,8 @@ def main() -> None:
     cache = {}
     summary = []
 
-    with ThreadPoolExecutor(max_workers=len(PLATFORMS)) as executor:
+    with ThreadPoolExecutor(max_workers=len(PLATFORMS) + 1) as executor:
+        current = executor.submit(stable_milestone)
         releases = {
             platform["name"]: executor.submit(
                 stable, platform.get("dash", platform["name"])
@@ -591,6 +600,7 @@ def main() -> None:
             for platform in PLATFORMS
         }
         releases = {name: future.result() for name, future in releases.items()}
+        current = current.result()
 
     pending = []
     entry_tasks = set()
@@ -599,10 +609,12 @@ def main() -> None:
     for platform in PLATFORMS:
         name = platform["name"]
         newest = releases[name]
-        if not newest:
-            raise ValueError(f"no Stable releases listed for {name}")
 
-        milestone = max(newest)
+        released = [item for item in newest if item <= current]
+        if not released:
+            raise ValueError(f"no Stable release at or below milestone {current} for {name}")
+
+        milestone = max(released)
         version = newest[milestone]
         baseline_milestone = milestone - 1
 
