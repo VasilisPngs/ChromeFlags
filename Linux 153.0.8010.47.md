@@ -1,4 +1,4 @@
-# Windows 153.0.8010.37
+# Linux 153.0.8010.47
 
 **AI Overlay Dialog**
 
@@ -128,6 +128,14 @@ Enables fast update checks for Isolated Web Apps, reducing the update check inte
 
 ---
 
+**Enable location provider manager for Geolocation API**
+
+Enables usage of the location provider manager to select between the operating system's location API or the network-based provider as the data source for Geolocation API.
+
+`chrome://flags/#enable-location-provider-manager`
+
+---
+
 **Rust-based ICO image handling**
 
 When enabled, uses Rust `image` crate to decode ICO images.
@@ -245,14 +253,6 @@ Optimizes how web page content is prepared and processed for Reading Mode.
 Enables the experimental playback UI for Reading Mode Read Aloud.
 
 `chrome://flags/#read-anything-read-aloud-experimental-playback-ui`
-
----
-
-**Enable Launch Chrome on Startup prompt**
-
-When enabled, shows an infobar prompting to launch Chrome on Windows startup
-
-`chrome://flags/#startup-launch-infobar`
 
 ---
 
