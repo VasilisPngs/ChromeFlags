@@ -1,4 +1,4 @@
-# Windows 153.0.8010.48
+# macOS 153.0.8010.49
 
 **AI Overlay Dialog**
 
@@ -248,11 +248,11 @@ Enables the experimental playback UI for Reading Mode Read Aloud.
 
 ---
 
-**Enable Launch Chrome on Startup prompt**
+**Suppress AppKit Frame Adjustments During Move Loop**
 
-When enabled, shows an infobar prompting to launch Chrome on Windows startup
+Suppresses AppKit system frame adjustment and move events on macOS while a window move loop is active (e.g. during tab dragging across display boundaries).
 
-`chrome://flags/#startup-launch-infobar`
+`chrome://flags/#suppress-appkit-frame-adjustments-during-move-loop`
 
 ---
 
