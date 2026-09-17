@@ -516,29 +516,32 @@ def number(version: str) -> tuple[int, ...]:
     return tuple(int(part) for part in parts)
 
 
-def stable_milestone() -> int:
-    data = json.loads(fetch(f"{DASH}/fetch_milestones?num=8"))
-    current = [item["milestone"] for item in data if item.get("schedule_phase") == "stable"]
-    if not current:
-        raise ValueError("no milestone is in the Stable phase")
-    return max(current)
-
-
-def stable(platform: str) -> dict[int, str]:
+def stable(platform: str) -> dict[int, tuple[str, int]]:
     data = json.loads(fetch(f"{DASH}/fetch_releases?channel=Stable&platform={platform}&num=60"))
-    releases = {}
+    releases: dict[int, tuple[str, int]] = {}
     for item in data:
         version = item.get("version")
-        if not version:
+        released = item.get("time")
+        if not version or not isinstance(released, int):
             continue
         try:
             parsed = number(version)
         except ValueError:
             continue
         milestone = parsed[0]
-        if milestone not in releases or parsed > number(releases[milestone]):
-            releases[milestone] = version
+        known = releases.get(milestone)
+        if known is None or parsed > number(known[0]):
+            releases[milestone] = (version, released)
     return releases
+
+
+def current_milestone(releases: dict[int, tuple[str, int]]) -> int:
+    milestone = max(releases)
+    while True:
+        earlier = releases.get(milestone - 1)
+        if earlier is None or earlier[1] < releases[milestone][1]:
+            return milestone
+        milestone -= 1
 
 
 def select(entries: dict[str, dict], tokens: set[str]) -> dict[str, dict]:
@@ -586,21 +589,37 @@ def report(platform: str, version: str, strings: dict, added: dict[str, dict]) -
     return "\n".join(lines).rstrip("\n") + "\n"
 
 
+def finish(summary: list[str], skipped: list[str]) -> None:
+    for note in skipped:
+        print(f"warning: {note}", file=sys.stderr)
+    if skipped and not summary and len(skipped) == len(PLATFORMS):
+        raise RuntimeError("; ".join(skipped))
+    line = " / ".join(summary) or "no flag changes"
+    if skipped:
+        line = f"{line} (skipped {len(skipped)})"
+    print(line)
+
+
 def main() -> None:
     force = "--force" in sys.argv
     cache = {}
     summary = []
 
-    with ThreadPoolExecutor(max_workers=len(PLATFORMS) + 1) as executor:
-        current = executor.submit(stable_milestone)
-        releases = {
+    skipped = []
+
+    with ThreadPoolExecutor(max_workers=len(PLATFORMS)) as executor:
+        futures = {
             platform["name"]: executor.submit(
                 stable, platform.get("dash", platform["name"])
             )
             for platform in PLATFORMS
         }
-        releases = {name: future.result() for name, future in releases.items()}
-        current = current.result()
+        releases = {}
+        for name, future in futures.items():
+            try:
+                releases[name] = future.result()
+            except Exception as error:
+                skipped.append(f"{name}: {error}")
 
     pending = []
     entry_tasks = set()
@@ -608,24 +627,27 @@ def main() -> None:
 
     for platform in PLATFORMS:
         name = platform["name"]
-        newest = releases[name]
+        newest = releases.get(name)
+        if not newest:
+            if name not in [note.split(":")[0] for note in skipped]:
+                skipped.append(f"{name}: no Stable release listed")
+            continue
 
-        released = [item for item in newest if item <= current]
-        if not released:
-            raise ValueError(f"no Stable release at or below milestone {current} for {name}")
+        try:
+            milestone = current_milestone(newest)
+            version = newest[milestone][0]
+            baseline_milestone = milestone - 1
 
-        milestone = max(released)
-        version = newest[milestone]
-        baseline_milestone = milestone - 1
+            while baseline_milestone not in newest and baseline_milestone > milestone - 8:
+                baseline_milestone -= 1
+            if baseline_milestone not in newest:
+                raise ValueError(f"no earlier Stable release to compare {version} against")
 
-        while baseline_milestone not in newest and baseline_milestone > milestone - 8:
-            baseline_milestone -= 1
-        if baseline_milestone not in newest:
-            raise ValueError(
-                f"no earlier Stable release to compare {version} against for {name}"
-            )
+            baseline = newest[baseline_milestone][0]
+        except Exception as error:
+            skipped.append(f"{name}: {error}")
+            continue
 
-        baseline = newest[baseline_milestone]
         destination = ROOT / f"{name} {version}.md"
         stale = [path for path in ROOT.glob(f"{name} *.md") if path != destination]
 
@@ -638,7 +660,7 @@ def main() -> None:
         string_tasks.add((version, source))
 
     if not pending:
-        print("no flag changes")
+        finish(summary, skipped)
         return
 
     with ThreadPoolExecutor() as executor:
@@ -650,18 +672,24 @@ def main() -> None:
             for version, source in sorted(string_tasks)
         ]
         for future in futures:
-            future.result()
+            try:
+                future.result()
+            except Exception:
+                pass
 
     for platform, version, baseline, destination, stale in pending:
         name = platform["name"]
         source = platform["source"]
         tokens = platform["tokens"]
 
-        selected = select(load_entries(version, source, cache), tokens)
-        previous = select(load_entries(baseline, source, cache), tokens)
-        added = {flag: selected[flag] for flag in sorted(set(selected) - set(previous))}
-
-        document = report(name, version, load_strings(version, source, cache), added)
+        try:
+            selected = select(load_entries(version, source, cache), tokens)
+            previous = select(load_entries(baseline, source, cache), tokens)
+            added = {flag: selected[flag] for flag in sorted(set(selected) - set(previous))}
+            document = report(name, version, load_strings(version, source, cache), added)
+        except Exception as error:
+            skipped.append(f"{name}: {error}")
+            continue
 
         if destination.exists() and not stale:
             if destination.read_text(encoding="utf-8") == document:
@@ -672,7 +700,7 @@ def main() -> None:
         destination.write_text(document, encoding="utf-8")
         summary.append(f"{name} {version} +{len(added)}")
 
-    print(" / ".join(summary) or "no flag changes")
+    finish(summary, skipped)
 
 
 if __name__ == "__main__":

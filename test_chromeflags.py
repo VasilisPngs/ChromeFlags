@@ -170,6 +170,32 @@ class TestChromeFlags(unittest.TestCase):
         self.assertEqual(title, "kMissingTitle")
         self.assertEqual(desc, "kMissingDesc")
 
+    def test_current_milestone_waits_while_the_old_one_is_still_served(self):
+        releases = {
+            152: ("152.0.7977.85", 1_000),
+            153: ("153.0.8010.49", 3_000),
+            154: ("154.0.8037.44", 3_000),
+        }
+        self.assertEqual(chromeflags.current_milestone(releases), 153)
+
+    def test_current_milestone_moves_on_once_the_old_one_stops(self):
+        releases = {
+            152: ("152.0.7977.64", 1_000),
+            153: ("153.0.8010.24", 2_000),
+            154: ("154.0.8037.41", 5_000),
+        }
+        self.assertEqual(chromeflags.current_milestone(releases), 154)
+
+    def test_current_milestone_accepts_a_single_milestone(self):
+        self.assertEqual(chromeflags.current_milestone({153: ("153.0.8010.47", 9)}), 153)
+
+    def test_current_milestone_ignores_older_extended_support(self):
+        releases = {
+            150: ("150.0.7871.200", 9_000),
+            153: ("153.0.8010.49", 3_000),
+        }
+        self.assertEqual(chromeflags.current_milestone(releases), 153)
+
     def test_number_validates_chrome_versions(self):
         self.assertEqual(chromeflags.number("153.0.8010.12"), (153, 0, 8010, 12))
         with self.assertRaises(ValueError):
