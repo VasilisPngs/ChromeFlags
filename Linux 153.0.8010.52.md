@@ -1,4 +1,4 @@
-# Linux 153.0.8010.47
+# Linux 153.0.8010.52
 
 **AI Overlay Dialog**
 
