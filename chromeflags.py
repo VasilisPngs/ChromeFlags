@@ -522,8 +522,10 @@ def stable(platform: str) -> dict[int, tuple[str, int]]:
     for item in data:
         version = item.get("version")
         released = item.get("time")
-        if not version or not isinstance(released, int):
+        if not version:
             continue
+        if not isinstance(released, (int, float)) or isinstance(released, bool):
+            released = 0
         try:
             parsed = number(version)
         except ValueError:
@@ -531,17 +533,36 @@ def stable(platform: str) -> dict[int, tuple[str, int]]:
         milestone = parsed[0]
         known = releases.get(milestone)
         if known is None or parsed > number(known[0]):
-            releases[milestone] = (version, released)
+            releases[milestone] = (version, int(released))
     return releases
 
 
-def current_milestone(releases: dict[int, tuple[str, int]]) -> int:
-    milestone = max(releases)
-    while True:
-        earlier = releases.get(milestone - 1)
-        if earlier is None or earlier[1] < releases[milestone][1]:
+def stable_cap() -> int | None:
+    try:
+        data = json.loads(fetch(f"{DASH}/fetch_milestones?num=8"))
+        settled = [
+            item["milestone"]
+            for item in data
+            if item.get("schedule_phase") == "stable" and isinstance(item.get("milestone"), int)
+        ]
+    except Exception as error:
+        print(f"warning: milestone phases unavailable: {error}", file=sys.stderr)
+        return None
+    return max(settled) if settled else None
+
+
+def current_milestone(releases: dict[int, tuple[str, int]], cap: int | None = None) -> int:
+    timed = len({released for _, released in releases.values()}) > 1
+    for milestone in sorted(releases, reverse=True):
+        if cap is not None and milestone <= cap:
             return milestone
-        milestone -= 1
+        if timed and all(
+            released < releases[milestone][1]
+            for lower, (_, released) in releases.items()
+            if lower < milestone
+        ):
+            return milestone
+    return max(releases)
 
 
 def select(entries: dict[str, dict], tokens: set[str]) -> dict[str, dict]:
@@ -607,7 +628,8 @@ def main() -> None:
 
     skipped = []
 
-    with ThreadPoolExecutor(max_workers=len(PLATFORMS)) as executor:
+    with ThreadPoolExecutor(max_workers=len(PLATFORMS) + 1) as executor:
+        cap = executor.submit(stable_cap)
         futures = {
             platform["name"]: executor.submit(
                 stable, platform.get("dash", platform["name"])
@@ -620,6 +642,7 @@ def main() -> None:
                 releases[name] = future.result()
             except Exception as error:
                 skipped.append(f"{name}: {error}")
+        cap = cap.result()
 
     pending = []
     entry_tasks = set()
@@ -634,7 +657,7 @@ def main() -> None:
             continue
 
         try:
-            milestone = current_milestone(newest)
+            milestone = current_milestone(newest, cap)
             version = newest[milestone][0]
             baseline_milestone = milestone - 1
 

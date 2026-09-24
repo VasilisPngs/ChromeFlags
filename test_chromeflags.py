@@ -1,4 +1,6 @@
+import json
 import unittest
+import unittest.mock
 
 import chromeflags
 
@@ -170,31 +172,59 @@ class TestChromeFlags(unittest.TestCase):
         self.assertEqual(title, "kMissingTitle")
         self.assertEqual(desc, "kMissingDesc")
 
-    def test_current_milestone_waits_while_the_old_one_is_still_served(self):
+    def test_current_milestone_stops_at_the_settled_phase(self):
         releases = {
-            152: ("152.0.7977.85", 1_000),
-            153: ("153.0.8010.49", 3_000),
-            154: ("154.0.8037.44", 3_000),
+            153: ("153.0.8010.55", 3_000),
+            154: ("154.0.8037.58", 2_000),
+            155: ("155.0.8059.12", 3_000),
         }
-        self.assertEqual(chromeflags.current_milestone(releases), 153)
+        self.assertEqual(chromeflags.current_milestone(releases, 154), 154)
 
-    def test_current_milestone_moves_on_once_the_old_one_stops(self):
+    def test_current_milestone_passes_the_cap_once_a_platform_moves_on(self):
         releases = {
             152: ("152.0.7977.64", 1_000),
             153: ("153.0.8010.24", 2_000),
             154: ("154.0.8037.41", 5_000),
         }
-        self.assertEqual(chromeflags.current_milestone(releases), 154)
+        self.assertEqual(chromeflags.current_milestone(releases, 153), 154)
+
+    def test_current_milestone_holds_back_while_an_older_one_is_patched(self):
+        releases = {
+            152: ("152.0.7977.85", 1_000),
+            153: ("153.0.8010.55", 3_000),
+            155: ("155.0.8059.12", 3_000),
+        }
+        self.assertEqual(chromeflags.current_milestone(releases, None), 153)
+
+    def test_current_milestone_without_a_cap_takes_a_settled_milestone(self):
+        releases = {
+            153: ("153.0.8010.24", 2_000),
+            154: ("154.0.8037.41", 5_000),
+        }
+        self.assertEqual(chromeflags.current_milestone(releases, None), 154)
 
     def test_current_milestone_accepts_a_single_milestone(self):
-        self.assertEqual(chromeflags.current_milestone({153: ("153.0.8010.47", 9)}), 153)
+        self.assertEqual(chromeflags.current_milestone({153: ("153.0.8010.47", 9)}, 154), 153)
 
     def test_current_milestone_ignores_older_extended_support(self):
         releases = {
             150: ("150.0.7871.200", 9_000),
-            153: ("153.0.8010.49", 3_000),
+            154: ("154.0.8037.58", 3_000),
         }
-        self.assertEqual(chromeflags.current_milestone(releases), 153)
+        self.assertEqual(chromeflags.current_milestone(releases, 154), 154)
+
+    def test_stable_keeps_releases_that_carry_no_timestamp(self):
+        payload = json.dumps([
+            {"version": "154.0.8037.58"},
+            {"version": "153.0.8010.55", "time": "not a number"},
+        ])
+        with unittest.mock.patch.object(chromeflags, "fetch", return_value=payload):
+            releases = chromeflags.stable("Windows")
+        self.assertEqual(releases, {154: ("154.0.8037.58", 0), 153: ("153.0.8010.55", 0)})
+
+    def test_current_milestone_falls_back_to_the_newest_without_any_signal(self):
+        releases = {153: ("153.0.8010.55", 0), 154: ("154.0.8037.58", 0)}
+        self.assertEqual(chromeflags.current_milestone(releases, None), 154)
 
     def test_number_validates_chrome_versions(self):
         self.assertEqual(chromeflags.number("153.0.8010.12"), (153, 0, 8010, 12))
