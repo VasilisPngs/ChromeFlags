@@ -34,7 +34,6 @@ SOURCES = {
     },
     "ios": {
         "entries": "ios/chrome/browser/flags/about_flags.mm",
-        "names": [],
         "strings": [
             ("ios/chrome/browser/flags/ios_chrome_flag_descriptions.h", False),
             ("components/commerce/core/flag_descriptions.cc", True),
@@ -492,7 +491,7 @@ def load_entries(version: str, source: str, cache: dict) -> dict[str, dict]:
 
     group = SOURCES[source]
     names = {}
-    for path in group["names"]:
+    for path in group.get("names", ()):
         names.update(declarations(path, version, False, cache))
     clean = strip_cpp_comments(fetch_chromium(group["entries"], version))
     entries = parse_entries(clean, names)
