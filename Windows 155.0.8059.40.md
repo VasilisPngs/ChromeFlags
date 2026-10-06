@@ -1,4 +1,4 @@
-# macOS 155.0.8059.26
+# Windows 155.0.8059.40
 
 **App Menu Glow Up**
 

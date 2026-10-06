@@ -1,4 +1,4 @@
-# Android 155.0.8059.30
+# Android 155.0.8059.39
 
 **AI Overlay Dialog**
 
@@ -125,6 +125,14 @@ Enables Glic to auto-open on promotion pages.
 Runs the Glic client in a PrivilegedWebContents instead of a webview.
 
 `chrome://flags/#glic-no-webview`
+
+---
+
+**Glic Voice**
+
+Enables voice input for Gemini in Chrome
+
+`chrome://flags/#glic-voice`
 
 ---
 

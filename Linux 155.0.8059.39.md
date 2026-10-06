@@ -1,4 +1,4 @@
-# Windows 155.0.8059.26
+# Linux 155.0.8059.39
 
 **App Menu Glow Up**
 
