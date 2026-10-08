@@ -1,5 +1,6 @@
 import base64
 import gzip
+import http.client
 import json
 import re
 import sys
@@ -7,6 +8,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import zlib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -14,6 +16,7 @@ DASH = "https://chromiumdash.appspot.com"
 ROOT = Path(__file__).resolve().parent
 CACHE_LOCK = threading.Lock()
 RETRY_CODES = frozenset({403, 429, 500, 502, 503})
+TRANSIENT_ERRORS = (OSError, http.client.HTTPException, zlib.error, EOFError)
 
 SOURCES = {
     "desktop": {
@@ -118,7 +121,7 @@ def fetch(url: str) -> str:
         except urllib.error.HTTPError as error:
             if attempt == 3 or error.code not in RETRY_CODES:
                 raise
-        except (urllib.error.URLError, TimeoutError, OSError):
+        except TRANSIENT_ERRORS:
             if attempt == 3:
                 raise
         attempt += 1

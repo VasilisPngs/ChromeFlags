@@ -1,6 +1,9 @@
+import http.client
 import json
 import unittest
 import unittest.mock
+import urllib.error
+import zlib
 
 import chromeflags
 
@@ -225,6 +228,50 @@ class TestChromeFlags(unittest.TestCase):
     def test_current_milestone_falls_back_to_the_newest_without_any_signal(self):
         releases = {153: ("153.0.8010.55", 0), 154: ("154.0.8037.58", 0)}
         self.assertEqual(chromeflags.current_milestone(releases, None), 154)
+
+    def test_fetch_retries_transient_transport_errors(self):
+        class Response:
+            headers = {}
+
+            def read(self):
+                return b"ok"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        for error in (
+            http.client.IncompleteRead(b"partial", 100),
+            http.client.BadStatusLine("garbage"),
+            zlib.error("corrupt"),
+            EOFError("truncated"),
+            urllib.error.URLError("down"),
+        ):
+            with self.subTest(error=type(error).__name__):
+                outcomes = [error, Response()]
+                calls = []
+
+                def opener(request, timeout):
+                    calls.append(request)
+                    outcome = outcomes.pop(0)
+                    if isinstance(outcome, BaseException):
+                        raise outcome
+                    return outcome
+
+                with unittest.mock.patch.object(chromeflags.urllib.request, "urlopen", opener), \
+                        unittest.mock.patch.object(chromeflags.time, "sleep"):
+                    self.assertEqual(chromeflags.fetch("https://example.test"), "ok")
+                self.assertEqual(len(calls), 2)
+
+    def test_fetch_does_not_retry_a_missing_resource(self):
+        error = urllib.error.HTTPError("https://example.test", 404, "missing", {}, None)
+        with unittest.mock.patch.object(chromeflags.urllib.request, "urlopen", side_effect=error) as opener, \
+                unittest.mock.patch.object(chromeflags.time, "sleep"):
+            with self.assertRaises(urllib.error.HTTPError):
+                chromeflags.fetch("https://example.test")
+        self.assertEqual(opener.call_count, 1)
 
     def test_number_validates_chrome_versions(self):
         self.assertEqual(chromeflags.number("153.0.8010.12"), (153, 0, 8010, 12))
