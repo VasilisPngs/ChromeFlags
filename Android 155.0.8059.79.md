@@ -1,10 +1,18 @@
-# Android 155.0.8059.40
+# Android 155.0.8059.79
 
 **AI Overlay Dialog**
 
 Enables the AI overlay dialog.
 
 `chrome://flags/#ai-overlay-dialog`
+
+---
+
+**Install any page as DIY app (stopgap)**
+
+When enabled, Android installs any eligible page as a DIY WebAPK instead of downgrading to a shortcut.
+
+`chrome://flags/#android-install-any-page-as-diy-app-stopgap`
 
 ---
 
