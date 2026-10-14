@@ -1,4 +1,4 @@
-# macOS 155.0.8059.40
+# macOS 155.0.8059.80
 
 **App Menu Glow Up**
 
