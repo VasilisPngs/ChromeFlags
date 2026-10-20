@@ -1,4 +1,4 @@
-# iOS-iPadOS 156.0.8078.33
+# iOS-iPadOS 156.0.8078.46
 
 **AIM Cobrowse Web Selection Search**
 
@@ -13,6 +13,22 @@ When enabled, 'Search with Google' in the web selection menu opens Cobrowse with
 When enabled, long pressing the AppBar assistant button shows a menu to choose which entry point the button shows.
 
 `chrome://flags/#app-bar-assistant-customization`
+
+---
+
+**Disable App Bar long press**
+
+When enabled, disables long-press context menus on the App Bar buttons.
+
+`chrome://flags/#app-bar-disable-long-press`
+
+---
+
+**App Bar static symbol when hidden**
+
+When enabled, the App Bar tab grid button swaps its symbol without an animated content transition while the App Bar is not visible.
+
+`chrome://flags/#app-bar-static-symbol-when-hidden`
 
 ---
 
@@ -77,6 +93,14 @@ Enables importing and exporting flags from chrome://flags.
 When enabled, the App Bar adapts its appearance to follow the user's preferred light or dark interface style.
 
 `chrome://flags/#light-app-bar`
+
+---
+
+**LocationBarPerformanceImprovements**
+
+Enables performance improvements for the location bar.
+
+`chrome://flags/#location-bar-performance-improvements`
 
 ---
 
