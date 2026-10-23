@@ -137,6 +137,52 @@ class TestChromeFlags(unittest.TestCase):
         with self.assertRaises(ValueError):
             entries(source)
 
+    def test_parse_entries_keeps_one_branch_when_each_branch_closes_the_entry(self):
+        source = """
+        constexpr auto kFeatureEntries = {
+            {"alpha", flag_descriptions::kAlphaTitle,
+             flag_descriptions::kAlphaDescription, kOsAndroid,
+        #if BUILDFLAG(IS_DESKTOP_ANDROID)
+             FEATURE_VALUE_TYPE(kAlphaDesktop)},
+        #else
+             FEATURE_VALUE_TYPE(kAlpha)},
+        #endif
+            {"beta", flag_descriptions::kBetaTitle,
+             flag_descriptions::kBetaDescription, kOsWin, nullptr},
+        };
+        """
+        parsed = entries(source)
+        self.assertEqual(set(parsed), {"alpha", "beta"})
+        self.assertEqual(parsed["alpha"]["os"], {"kOsAndroid"})
+        self.assertEqual(parsed["beta"]["os"], {"kOsWin"})
+
+    def test_parse_entries_merges_alternative_entries_from_every_branch(self):
+        source = """
+        constexpr auto kFeatureEntries = {
+        #if BUILDFLAG(IS_CHROMEOS)
+            {"gamma", flag_descriptions::kGammaTitle,
+             flag_descriptions::kGammaDescription, kOsCrOS, nullptr},
+        #elif BUILDFLAG(IS_WIN) || \\
+            BUILDFLAG(IS_MAC)
+            {"gamma", flag_descriptions::kGammaTitle,
+             flag_descriptions::kGammaDescription, kOsWin | kOsMac, nullptr},
+        #endif
+        };
+        """
+        self.assertEqual(entries(source)["gamma"]["os"], {"kOsCrOS", "kOsWin", "kOsMac"})
+
+    def test_feature_entries_rejects_an_initializer_that_closes_early(self):
+        source = """
+        constexpr auto kFeatureEntries = {
+            {"alpha", flag_descriptions::kAlphaTitle,
+             flag_descriptions::kAlphaDescription, kOsAll, nullptr}},
+            {"beta", flag_descriptions::kBetaTitle,
+             flag_descriptions::kBetaDescription, kOsAll, nullptr},
+        };
+        """
+        with self.assertRaises(ValueError):
+            entries(source)
+
     def test_select_includes_kos_all(self):
         table = {
             "shared": {"os": {"kOsAll"}},

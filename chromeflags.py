@@ -89,6 +89,8 @@ LITERAL_RE = re.compile(r'"((?:[^"\\]|\\.)*)"', re.DOTALL)
 IDENTIFIER_RE = re.compile(r"(?:[A-Za-z_][A-Za-z0-9_]*::)*(k[A-Za-z0-9_]+)\s*$")
 OS_RE = re.compile(r"\bkOs[A-Za-z]+\b")
 FLAG_LITERAL_RE = re.compile(r'"([A-Za-z0-9][A-Za-z0-9._-]*)"')
+DIRECTIVE_RE = re.compile(r"[ \t]*#[ \t]*(\w*)")
+TERMINATOR_RE = re.compile(r"\s*[;)]")
 
 HEX_DIGITS = "0123456789abcdefABCDEF"
 SIMPLE_ESCAPES = {
@@ -187,36 +189,66 @@ def strip_cpp_comments(text: str) -> str:
     return "".join(result)
 
 
+def branch(frames: list[list], word: str, depth: int) -> int:
+    if word in ("if", "ifdef", "ifndef"):
+        frames.append([depth, None, False])
+    elif frames and word in ("elif", "elifdef", "elifndef", "else"):
+        frame = frames[-1]
+        if not frame[2]:
+            frame[1:] = [depth, True]
+        return frame[0]
+    elif frames and word == "endif":
+        frame = frames.pop()
+        if frame[2]:
+            return frame[1]
+    return depth
+
+
 def feature_entries(clean: str) -> str:
     match = FEATURE_ENTRIES_RE.search(clean)
     if not match:
         raise ValueError("kFeatureEntries initializer not found")
 
-    start = match.end()
+    kept = []
+    frames = []
     depth = 1
-    index = start
+    quote = None
+    continued = False
+    position = match.end()
 
-    while index < len(clean):
-        char = clean[index]
-        if char in ('"', "'"):
-            quote = char
-            index += 1
-            while index < len(clean):
-                if clean[index] == "\\":
-                    index += 2
-                    continue
-                if clean[index] == quote:
-                    index += 1
-                    break
+    for line in clean[position:].split("\n"):
+        directive = None if quote or continued else DIRECTIVE_RE.match(line)
+        if continued or directive:
+            if directive:
+                depth = branch(frames, directive.group(1), depth)
+            continued = line.rstrip().endswith("\\")
+            kept.append("")
+        elif any(frame[2] and frame[1] != frame[0] for frame in frames):
+            kept.append("")
+        else:
+            index = 0
+            while index < len(line):
+                char = line[index]
+                if quote is not None:
+                    if char == "\\":
+                        index += 1
+                    elif char == quote:
+                        quote = None
+                elif char in ('"', "'"):
+                    quote = char
+                elif char == "{":
+                    depth += 1
+                elif char == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end = position + index
+                        if not TERMINATOR_RE.match(clean, end + 1):
+                            line_number = clean.count("\n", 0, end) + 1
+                            raise ValueError(f"kFeatureEntries initializer closes early on line {line_number}")
+                        return "\n".join(kept + [line[:index]])
                 index += 1
-            continue
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                return clean[start:index]
-        index += 1
+            kept.append(line)
+        position += len(line) + 1
 
     raise ValueError("kFeatureEntries initializer is unterminated")
 
