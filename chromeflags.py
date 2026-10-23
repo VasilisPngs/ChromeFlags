@@ -121,6 +121,7 @@ def fetch(url: str) -> str:
                     body = gzip.decompress(body)
                 return body.decode("utf-8", "replace")
         except urllib.error.HTTPError as error:
+            error.close()
             if attempt == 3 or error.code not in RETRY_CODES:
                 raise
         except TRANSIENT_ERRORS:
