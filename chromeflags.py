@@ -9,6 +9,7 @@ import time
 import urllib.error
 import urllib.request
 import zlib
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -76,14 +77,12 @@ PLATFORMS = [
 ]
 
 FEATURE_ENTRIES_RE = re.compile(
-    r"\bkFeatureEntries\b[^=]*=\s*(?:std::to_array\s*<[^;{}]+>\s*)?\(?\s*\{",
-    re.MULTILINE,
+    r"\bkFeatureEntries\b[^=]*=\s*(?:std::to_array\s*<[^;{}]+>\s*)?\(?\s*\{"
 )
 STRING_DECL_RE = re.compile(
     r"(?:inline\s+|static\s+|constexpr\s+|const\s+)*"
     r"char\s+(?P<name>k[A-Za-z0-9_]+)\s*\[\]\s*=\s*"
-    r'(?P<value>(?:"(?:\\.|[^"\\])*"\s*)+);',
-    re.MULTILINE,
+    r'(?P<value>(?:"(?:\\.|[^"\\])*"\s*)+);'
 )
 LITERAL_RE = re.compile(r'"((?:[^"\\]|\\.)*)"', re.DOTALL)
 IDENTIFIER_RE = re.compile(r"(?:[A-Za-z_][A-Za-z0-9_]*::)*(k[A-Za-z0-9_]+)\s*$")
@@ -190,6 +189,21 @@ def strip_cpp_comments(text: str) -> str:
     return "".join(result)
 
 
+def unquoted(text: str) -> Iterator[tuple[int, str]]:
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char in ('"', "'"):
+            index += 1
+            while index < len(text) and text[index] != char:
+                index += 2 if text[index] == "\\" else 1
+            if index >= len(text):
+                raise ValueError("unterminated literal")
+        else:
+            yield index, char
+        index += 1
+
+
 def branch(frames: list[list], word: str, depth: int) -> int:
     if word in ("if", "ifdef", "ifndef"):
         frames.append([depth, None, False])
@@ -213,12 +227,11 @@ def feature_entries(clean: str) -> str:
     kept = []
     frames = []
     depth = 1
-    quote = None
     continued = False
     position = match.end()
 
     for line in clean[position:].split("\n"):
-        directive = None if quote or continued else DIRECTIVE_RE.match(line)
+        directive = None if continued else DIRECTIVE_RE.match(line)
         if continued or directive:
             if directive:
                 depth = branch(frames, directive.group(1), depth)
@@ -227,17 +240,8 @@ def feature_entries(clean: str) -> str:
         elif any(frame[2] and frame[1] != frame[0] for frame in frames):
             kept.append("")
         else:
-            index = 0
-            while index < len(line):
-                char = line[index]
-                if quote is not None:
-                    if char == "\\":
-                        index += 1
-                    elif char == quote:
-                        quote = None
-                elif char in ('"', "'"):
-                    quote = char
-                elif char == "{":
+            for index, char in unquoted(line):
+                if char == "{":
                     depth += 1
                 elif char == "}":
                     depth -= 1
@@ -247,7 +251,6 @@ def feature_entries(clean: str) -> str:
                             line_number = clean.count("\n", 0, end) + 1
                             raise ValueError(f"kFeatureEntries initializer closes early on line {line_number}")
                         return "\n".join(kept + [line[:index]])
-                index += 1
             kept.append(line)
         position += len(line) + 1
 
@@ -259,39 +262,19 @@ def split_top_level(text: str) -> list[str]:
     start = 0
     depth = {"(": 0, "[": 0, "{": 0}
     pairs = {")": "(", "]": "[", "}": "{"}
-    total_depth = 0
-    index = 0
-    quote = None
 
-    while index < len(text):
-        char = text[index]
-        if quote is not None:
-            if char == "\\":
-                index += 2
-                continue
-            if char == quote:
-                quote = None
-            index += 1
-            continue
-        if char in ('"', "'"):
-            quote = char
-            index += 1
-            continue
+    for index, char in unquoted(text):
         if char in depth:
             depth[char] += 1
-            total_depth += 1
         elif char in pairs:
-            opener = pairs[char]
-            if depth[opener] == 0:
+            if depth[pairs[char]] == 0:
                 raise ValueError(f"unbalanced delimiter {char}")
-            depth[opener] -= 1
-            total_depth -= 1
-        elif char == "," and total_depth == 0:
+            depth[pairs[char]] -= 1
+        elif char == "," and not any(depth.values()):
             fields.append(text[start:index].strip())
             start = index + 1
-        index += 1
 
-    if quote is not None or total_depth != 0:
+    if any(depth.values()):
         raise ValueError("unterminated entry field")
     fields.append(text[start:].strip())
     return fields
@@ -300,24 +283,9 @@ def split_top_level(text: str) -> list[str]:
 def entry_blocks(body: str) -> list[str]:
     blocks = []
     depth = 0
-    start = None
-    index = 0
-    quote = None
+    start = 0
 
-    while index < len(body):
-        char = body[index]
-        if quote is not None:
-            if char == "\\":
-                index += 2
-                continue
-            if char == quote:
-                quote = None
-            index += 1
-            continue
-        if char in ('"', "'"):
-            quote = char
-            index += 1
-            continue
+    for index, char in unquoted(body):
         if char == "{":
             if depth == 0:
                 start = index + 1
@@ -326,18 +294,16 @@ def entry_blocks(body: str) -> list[str]:
             if depth == 0:
                 raise ValueError("unexpected closing brace in flag entries")
             depth -= 1
-            if depth == 0 and start is not None:
+            if depth == 0:
                 blocks.append(body[start:index])
-                start = None
-        index += 1
 
-    if quote is not None or depth != 0:
+    if depth:
         raise ValueError("unterminated flag entry block")
     return blocks
 
 
 def string_key(expression: str) -> str:
-    match = IDENTIFIER_RE.search(expression.strip())
+    match = IDENTIFIER_RE.search(expression)
     if not match:
         raise ValueError(f"flag description key not found in expression: {expression}")
     return match.group(1)
@@ -569,6 +535,8 @@ def stable(platform: str) -> dict[int, tuple[str, int]]:
         known = releases.get(milestone)
         if known is None or parsed > number(known[0]):
             releases[milestone] = (version, int(released))
+    if not releases:
+        raise ValueError("no Stable release listed")
     return releases
 
 
@@ -586,7 +554,7 @@ def stable_cap() -> int | None:
     return max(settled) if settled else None
 
 
-def current_milestone(releases: dict[int, tuple[str, int]], cap: int | None = None) -> int:
+def current_milestone(releases: dict[int, tuple[str, int]], cap: int | None) -> int:
     timed = len({released for _, released in releases.values()}) > 1
     for milestone in sorted(releases, reverse=True):
         if cap is not None and milestone <= cap:
@@ -648,7 +616,7 @@ def report(platform: str, version: str, strings: dict, added: dict[str, dict]) -
 def finish(summary: list[str], skipped: list[str]) -> None:
     for note in skipped:
         print(f"warning: {note}", file=sys.stderr)
-    if skipped and not summary and len(skipped) == len(PLATFORMS):
+    if len(skipped) == len(PLATFORMS):
         raise RuntimeError("; ".join(skipped))
     line = " / ".join(summary) or "no flag changes"
     if skipped:
@@ -660,7 +628,6 @@ def main() -> None:
     force = "--force" in sys.argv
     cache = {}
     summary = []
-
     skipped = []
 
     with ThreadPoolExecutor(max_workers=len(PLATFORMS) + 1) as executor:
@@ -686,9 +653,7 @@ def main() -> None:
     for platform in PLATFORMS:
         name = platform["name"]
         newest = releases.get(name)
-        if not newest:
-            if name not in [note.split(":")[0] for note in skipped]:
-                skipped.append(f"{name}: no Stable release listed")
+        if newest is None:
             continue
 
         try:
@@ -722,18 +687,10 @@ def main() -> None:
         return
 
     with ThreadPoolExecutor() as executor:
-        futures = [
+        for version, source in sorted(entry_tasks):
             executor.submit(load_entries, version, source, cache)
-            for version, source in sorted(entry_tasks)
-        ] + [
+        for version, source in sorted(string_tasks):
             executor.submit(load_strings, version, source, cache)
-            for version, source in sorted(string_tasks)
-        ]
-        for future in futures:
-            try:
-                future.result()
-            except Exception:
-                pass
 
     for platform, version, baseline, destination, stale in pending:
         name = platform["name"]
@@ -762,8 +719,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as error:
-        print(f"error: {error}", file=sys.stderr)
-        raise
+    main()

@@ -15,9 +15,7 @@ on:
 permissions:
   contents: write
 
-concurrency:
-  group: chromeflags
-  cancel-in-progress: false
+concurrency: chromeflags
 
 jobs:
   report:
@@ -32,7 +30,6 @@ jobs:
 
       - name: Update the reports
         run: |
-          set -e
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           FLAGS_ARG=""
