@@ -28,9 +28,8 @@ class TestChromeFlags(unittest.TestCase):
         self.assertNotIn("Block Comment", stripped)
         self.assertNotIn("Multi", stripped)
 
-    def test_feature_entries_supports_comments_before_initializer(self):
+    def test_feature_entries_parses_std_to_array_initializer(self):
         source = """
-        // This used to break comment-aware extraction in earlier versions.
         constexpr auto kFeatureEntries = std::to_array<flags_ui::FeatureEntry>({
             {"alpha",
              flag_descriptions::kAlphaTitle,

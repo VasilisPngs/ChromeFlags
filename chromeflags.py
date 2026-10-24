@@ -80,12 +80,11 @@ FEATURE_ENTRIES_RE = re.compile(
     r"\bkFeatureEntries\b[^=]*=\s*(?:std::to_array\s*<[^;{}]+>\s*)?\(?\s*\{"
 )
 STRING_DECL_RE = re.compile(
-    r"(?:inline\s+|static\s+|constexpr\s+|const\s+)*"
     r"char\s+(?P<name>k[A-Za-z0-9_]+)\s*\[\]\s*=\s*"
     r'(?P<value>(?:"(?:\\.|[^"\\])*"\s*)+);'
 )
-LITERAL_RE = re.compile(r'"((?:[^"\\]|\\.)*)"', re.DOTALL)
-IDENTIFIER_RE = re.compile(r"(?:[A-Za-z_][A-Za-z0-9_]*::)*(k[A-Za-z0-9_]+)\s*$")
+LITERAL_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
+IDENTIFIER_RE = re.compile(r"(k[A-Za-z0-9_]+)\s*$")
 OS_RE = re.compile(r"\bkOs[A-Za-z]+\b")
 FLAG_LITERAL_RE = re.compile(r'"([A-Za-z0-9][A-Za-z0-9._-]*)"')
 DIRECTIVE_RE = re.compile(r"[ \t]*#[ \t]*(\w*)")
@@ -236,10 +235,7 @@ def feature_entries(clean: str) -> str:
             if directive:
                 depth = branch(frames, directive.group(1), depth)
             continued = line.rstrip().endswith("\\")
-            kept.append("")
-        elif any(frame[2] and frame[1] != frame[0] for frame in frames):
-            kept.append("")
-        else:
+        elif not any(frame[2] and frame[1] != frame[0] for frame in frames):
             for index, char in unquoted(line):
                 if char == "{":
                     depth += 1
