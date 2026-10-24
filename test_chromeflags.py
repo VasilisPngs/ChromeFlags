@@ -182,6 +182,54 @@ class TestChromeFlags(unittest.TestCase):
         with self.assertRaises(ValueError):
             entries(source)
 
+    def test_parse_entries_accepts_literal_titles_and_descriptions(self):
+        source = """
+        constexpr auto kFeatureEntries = {
+            {"alpha", "Alpha title", "Alpha " "description", kOsAll, nullptr},
+        };
+        """
+        entry = entries(source)["alpha"]
+        self.assertEqual(chromeflags.describe("alpha", entry, {}), ("Alpha title", "Alpha description"))
+
+    def test_feature_entries_rejects_an_unknown_include(self):
+        source = """
+        constexpr auto kFeatureEntries = {
+        #include "chrome/browser/other_flags_gen.inc"
+            {"alpha", flag_descriptions::kAlphaTitle,
+             flag_descriptions::kAlphaDescription, kOsAll, nullptr},
+        };
+        """
+        with self.assertRaises(ValueError):
+            entries(source)
+
+    def test_expand_unexpire_adds_the_flags_of_the_two_previous_milestones(self):
+        generator = chromeflags.UNEXPIRE_FRAGMENT + "\n".join(chromeflags.UNEXPIRE_LOGIC)
+        source = chromeflags.strip_cpp_comments("""
+        constexpr auto kFeatureEntries = {
+        #include "build/chromeos_buildflags.h"
+        #include "chrome/browser/unexpire_flags_gen.inc"
+            {"alpha", flag_descriptions::kAlphaTitle,
+             flag_descriptions::kAlphaDescription, kOsWin, nullptr},
+        };
+        """)
+        with unittest.mock.patch.object(chromeflags, "fetch_chromium", return_value=generator):
+            parsed = chromeflags.parse_entries(chromeflags.expand_unexpire(source, "156.0.8078.49"), {})
+        self.assertEqual(set(parsed), {"alpha", "temporary-unexpire-flags-m154", "temporary-unexpire-flags-m155"})
+        entry = parsed["temporary-unexpire-flags-m155"]
+        self.assertEqual(entry["os"], {"kOsAll"})
+        self.assertEqual(
+            chromeflags.describe("temporary-unexpire-flags-m155", entry, {}),
+            (
+                "Temporarily unexpire M155 flags.",
+                "Temporarily unexpire flags that expired as of M155. These flags will be removed soon.",
+            ),
+        )
+
+    def test_expand_unexpire_rejects_a_changed_generator(self):
+        with unittest.mock.patch.object(chromeflags, "fetch_chromium", return_value="return [mstone]"):
+            with self.assertRaises(ValueError):
+                chromeflags.expand_unexpire(chromeflags.UNEXPIRE_INCLUDE, "156.0.8078.49")
+
     def test_select_includes_kos_all(self):
         table = {
             "shared": {"os": {"kOsAll"}},

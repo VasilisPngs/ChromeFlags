@@ -76,18 +76,30 @@ PLATFORMS = [
     },
 ]
 
+UNEXPIRE_INCLUDE = '#include "chrome/browser/unexpire_flags_gen.inc"'
+UNEXPIRE_GENERATOR = "tools/flags/generate_unexpire_flags.py"
+UNEXPIRE_LOGIC = ("return [mstone - 1, mstone]", "gen_flags_fragment(progname, mstone - 1)")
+UNEXPIRE_FRAGMENT = """
+    {{"temporary-unexpire-flags-m{m}",
+     "Temporarily unexpire M{m} flags.",
+     "Temporarily unexpire flags that expired as of M{m}. These flags will be"
+     " removed soon.",
+     kOsAll | flags_ui::kFlagInfrastructure,
+     FEATURE_VALUE_TYPE(flags::kUnexpireFlagsM{m})}},
+"""
+
+LITERALS = r'(?:"(?:\\.|[^"\\])*"\s*)+'
 FEATURE_ENTRIES_RE = re.compile(
     r"\bkFeatureEntries\b[^=]*=\s*(?:std::to_array\s*<[^;{}]+>\s*)?\(?\s*\{"
 )
-STRING_DECL_RE = re.compile(
-    r"char\s+(?P<name>k[A-Za-z0-9_]+)\s*\[\]\s*=\s*"
-    r'(?P<value>(?:"(?:\\.|[^"\\])*"\s*)+);'
-)
+STRING_DECL_RE = re.compile(rf"char\s+(?P<name>k[A-Za-z0-9_]+)\s*\[\]\s*=\s*(?P<value>{LITERALS});")
+LITERALS_RE = re.compile(LITERALS)
 LITERAL_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
 IDENTIFIER_RE = re.compile(r"(k[A-Za-z0-9_]+)\s*$")
 OS_RE = re.compile(r"\bkOs[A-Za-z]+\b")
 FLAG_LITERAL_RE = re.compile(r'"([A-Za-z0-9][A-Za-z0-9._-]*)"')
 DIRECTIVE_RE = re.compile(r"[ \t]*#[ \t]*(\w*)")
+INCLUDE_RE = re.compile(r'[ \t]*#[ \t]*include[ \t]*["<]([^">]*)[">]')
 TERMINATOR_RE = re.compile(r"\s*[;)]")
 
 HEX_DIGITS = "0123456789abcdefABCDEF"
@@ -233,6 +245,9 @@ def feature_entries(clean: str) -> str:
         directive = None if continued else DIRECTIVE_RE.match(line)
         if continued or directive:
             if directive:
+                include = INCLUDE_RE.match(line)
+                if include and not include.group(1).endswith(".h"):
+                    raise ValueError(f"kFeatureEntries includes {include.group(1)}, which is not parsed")
                 depth = branch(frames, directive.group(1), depth)
             continued = line.rstrip().endswith("\\")
         elif not any(frame[2] and frame[1] != frame[0] for frame in frames):
@@ -299,6 +314,8 @@ def entry_blocks(body: str) -> list[str]:
 
 
 def string_key(expression: str) -> str:
+    if LITERALS_RE.fullmatch(expression):
+        return expression
     match = IDENTIFIER_RE.search(expression)
     if not match:
         raise ValueError(f"flag description key not found in expression: {expression}")
@@ -442,14 +459,12 @@ def decode_cpp_string(value: str) -> str:
     return "".join(result)
 
 
+def literal_text(value: str) -> str:
+    return "".join(decode_cpp_string(literal) for literal in LITERAL_RE.findall(value))
+
+
 def parse_strings(clean: str) -> dict[str, str]:
-    return {
-        match.group("name"): "".join(
-            decode_cpp_string(literal)
-            for literal in LITERAL_RE.findall(match.group("value"))
-        )
-        for match in STRING_DECL_RE.finditer(clean)
-    }
+    return {match.group("name"): literal_text(match.group("value")) for match in STRING_DECL_RE.finditer(clean)}
 
 
 def fetch_chromium(path: str, version: str, optional: bool = False) -> str | None:
@@ -481,6 +496,17 @@ def declarations(path: str, version: str, optional: bool, cache: dict) -> dict[s
     return cached
 
 
+def expand_unexpire(clean: str, version: str) -> str:
+    if UNEXPIRE_INCLUDE not in clean:
+        return clean
+    generator = fetch_chromium(UNEXPIRE_GENERATOR, version)
+    if not all(part in generator for part in (UNEXPIRE_FRAGMENT, *UNEXPIRE_LOGIC)):
+        raise ValueError(f"{UNEXPIRE_GENERATOR} no longer generates the expected unexpire flags")
+    milestone = number(version)[0]
+    fragment = "".join(UNEXPIRE_FRAGMENT.format(m=m) for m in (milestone - 2, milestone - 1))
+    return clean.replace(UNEXPIRE_INCLUDE, fragment)
+
+
 def load_entries(version: str, source: str, cache: dict) -> dict[str, dict]:
     key = ("entries", version, source)
     with CACHE_LOCK:
@@ -491,7 +517,7 @@ def load_entries(version: str, source: str, cache: dict) -> dict[str, dict]:
     names = {}
     for path in group.get("names", ()):
         names.update(declarations(path, version, False, cache))
-    clean = strip_cpp_comments(fetch_chromium(group["entries"], version))
+    clean = expand_unexpire(strip_cpp_comments(fetch_chromium(group["entries"], version)), version)
     entries = parse_entries(clean, names)
 
     with CACHE_LOCK:
@@ -578,9 +604,13 @@ def escape(text: str) -> str:
     )
 
 
+def resolve(key: str, strings: dict) -> str | None:
+    return literal_text(key) if key.startswith('"') else strings.get(key)
+
+
 def describe(flag: str, entry: dict, strings: dict) -> tuple[str, str]:
-    title = strings.get(entry["title_key"])
-    desc = strings.get(entry["desc_key"])
+    title = resolve(entry["title_key"], strings)
+    desc = resolve(entry["desc_key"], strings)
     if title is None:
         print(f"warning: missing title string {entry['title_key']} for {flag}", file=sys.stderr)
         title = entry["title_key"]
