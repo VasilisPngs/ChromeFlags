@@ -221,3 +221,11 @@ Restricts certain web page invocations during gestures originating within system
 Enables fast-follow refinements and visual adjustments for the desktop profile menu on Desktop Android.
 
 `chrome://flags/#signin-button-profile-menu-refinements`
+
+---
+
+**Temporarily unexpire M155 flags.**
+
+Temporarily unexpire flags that expired as of M155. These flags will be removed soon.
+
+`chrome://flags/#temporary-unexpire-flags-m155`

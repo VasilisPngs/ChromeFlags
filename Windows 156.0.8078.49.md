@@ -149,3 +149,11 @@ Shows a QR code to download and sign in to Chrome on mobile when no target devic
 Shows the Skills sub-menu item in the Chrome app menu.
 
 `chrome://flags/#skills-app-menu`
+
+---
+
+**Temporarily unexpire M155 flags.**
+
+Temporarily unexpire flags that expired as of M155. These flags will be removed soon.
+
+`chrome://flags/#temporary-unexpire-flags-m155`
