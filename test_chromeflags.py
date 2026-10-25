@@ -241,6 +241,29 @@ class TestChromeFlags(unittest.TestCase):
             with self.assertRaises(ValueError):
                 chromeflags.expand_unexpire(chromeflags.UNEXPIRE_INCLUDE, "156.0.8078.49")
 
+    def test_load_entries_hides_flags_that_expired_before_the_milestone(self):
+        files = {
+            "about_flags.cc": """
+            constexpr auto kFeatureEntries = {
+                {"expired", "Expired", "Expired flag", kOsAll, nullptr},
+                {"current", "Current", "Current flag", kOsAll, nullptr},
+                {"lasting", "Lasting", "Lasting flag", kOsAll, nullptr},
+            };
+            """,
+            "flag-metadata.json": """
+            // This file lists metadata for chrome://flags entries.
+            [
+              {"name": "expired", "owners": ["//chrome/browser/OWNERS"], "expiry_milestone": 155},
+              {"name": "current", "owners": ["someone@chromium.org"], "expiry_milestone": 156},
+              {"name": "lasting", "owners": ["someone@chromium.org"], "expiry_milestone": -1}
+            ]
+            """,
+        }
+        group = {"entries": "about_flags.cc", "metadata": "flag-metadata.json", "strings": []}
+        with unittest.mock.patch.dict(chromeflags.SOURCES, {"test": group}), \
+                unittest.mock.patch.object(chromeflags, "fetch_chromium", side_effect=lambda path, version: files[path]):
+            self.assertEqual(set(chromeflags.load_entries("156.0.8078.49", "test", {})), {"current", "lasting"})
+
     def test_select_includes_kos_all(self):
         table = {
             "shared": [{"os": {"kOsAll"}}],

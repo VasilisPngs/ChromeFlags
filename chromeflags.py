@@ -22,6 +22,7 @@ TRANSIENT_ERRORS = (OSError, http.client.HTTPException, zlib.error, EOFError)
 SOURCES = {
     "desktop": {
         "entries": "chrome/browser/about_flags.cc",
+        "metadata": "chrome/browser/flag-metadata.json",
         "names": [
             "base/base_switches.h",
             "chrome/browser/site_isolation/about_flags.h",
@@ -515,6 +516,12 @@ def expand_unexpire(clean: str, version: str) -> str:
     return clean.replace(UNEXPIRE_INCLUDE, fragment)
 
 
+def expired_flags(path: str, version: str) -> set[str]:
+    milestone = number(version)[0]
+    metadata = json.loads(strip_cpp_comments(fetch_chromium(path, version)))
+    return {item["name"] for item in metadata if 0 <= item["expiry_milestone"] < milestone}
+
+
 def load_entries(version: str, source: str, cache: dict) -> dict[str, list[dict]]:
     key = ("entries", version, source)
     with CACHE_LOCK:
@@ -526,7 +533,8 @@ def load_entries(version: str, source: str, cache: dict) -> dict[str, list[dict]
     for path in group.get("names", ()):
         names.update(declarations(path, version, False, cache))
     clean = expand_unexpire(strip_cpp_comments(fetch_chromium(group["entries"], version)), version)
-    entries = parse_entries(clean, names)
+    hidden = expired_flags(group["metadata"], version) if "metadata" in group else set()
+    entries = {flag: variants for flag, variants in parse_entries(clean, names).items() if flag not in hidden}
 
     with CACHE_LOCK:
         cache[key] = entries
