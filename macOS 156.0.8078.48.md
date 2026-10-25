@@ -24,6 +24,14 @@ Enables browser history filtering by device.
 
 ---
 
+**Browsing History Grouping Improvements**
+
+Enables improvements to grouping of similar browsing history on the history page.
+
+`chrome://flags/#browsing-history-similar-visits-grouping`
+
+---
+
 **Composebox Outside Click (Realbox)**
 
 Clicking outside the Realbox Composebox closes the suggestions dropdown and restores page interaction while keeping the Composebox open.
@@ -64,6 +72,22 @@ Enables offering to reopen a search answer in the Contextual Tasks side panel.
 
 ---
 
+**Headless Live Captions**
+
+Enable features related to headless captions exploration. These are very likely unstable.
+
+`chrome://flags/#enable-headless-live-caption`
+
+---
+
+**Headless Caption Early Start**
+
+Start headless captioning as soon as a profile is loaded.
+
+`chrome://flags/#enable-headless-live-caption-early-start`
+
+---
+
 **Enterprise Signin Dialogs Refresh**
 
 Enables the visually refreshed enterprise signin dialogs (enterprise profile welcome/creation, OIDC and the device signals disclaimer). It is no-op if `first-run-desktop-refresh` is disabled.
@@ -85,6 +109,14 @@ Enables the dialog shown when user feedback is disabled.
 Allows focusing a selection of ungrouped tabs in the tabstrip.
 
 `chrome://flags/#focus-selection`
+
+---
+
+**Glic actor cursor**
+
+Enables the Glic actor cursor
+
+`chrome://flags/#glic-actor-cursor`
 
 ---
 

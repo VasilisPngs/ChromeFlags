@@ -32,6 +32,14 @@ Makes the "Close all tabs" action in the tab switcher leave pinned tabs open, an
 
 ---
 
+**Android Desktop Zoom Scaling**
+
+When enabled, this feature will scale the Desktop Android web content up by some percentage, transparent to the user.
+
+`chrome://flags/#android-desktop-zoom-scaling`
+
+---
+
 **Android New Management Notice**
 
 Replaces the existing enterprise management notice shown during the sign-in flow on Android with the new management notice.
@@ -69,6 +77,14 @@ When enabled, ignores the strike database checks for the payments churned users 
 Enables scroll jank and visual transition improvements for Android bottom controls.
 
 `chrome://flags/#bottom-controls-jank-improvement`
+
+---
+
+**Browser controls debugging**
+
+Enables logs to debug Android browser controls.
+
+`chrome://flags/#browser-controls-debugging`
 
 ---
 
