@@ -243,7 +243,7 @@ class TestChromeFlags(unittest.TestCase):
         source = r'''
         constexpr char kTitle[] = "First " "Second";
         const char kDescription[] = "Line one\nLine two";
-        inline constexpr char kUnicode[] = "Aé";
+        inline constexpr char kUnicode[] = "A\u00E9";
         constexpr char kUtf8[] = "A\xC3\xA9";
         '''
         strings = chromeflags.parse_strings(source)
@@ -253,11 +253,11 @@ class TestChromeFlags(unittest.TestCase):
         self.assertEqual(strings["kUtf8"], "Aé")
 
     def test_decode_cpp_string_supports_surrogate_pairs(self):
-        self.assertEqual(chromeflags.decode_cpp_string(r"😀"), "😀")
+        self.assertEqual(chromeflags.decode_cpp_string(r"\uD83D\uDE00"), "😀")
 
     def test_decode_cpp_string_replaces_unpaired_surrogates(self):
-        self.assertEqual(chromeflags.decode_cpp_string(r"\uD83D"), "�")
-        self.assertEqual(chromeflags.decode_cpp_string(r"\uDE00"), "�")
+        self.assertEqual(chromeflags.decode_cpp_string(r"\uD83D"), "\ufffd")
+        self.assertEqual(chromeflags.decode_cpp_string(r"\uDE00"), "\ufffd")
 
     def test_escape_encodes_html_metacharacters(self):
         self.assertEqual(chromeflags.escape("a & b <tag>\nnext"), "a &amp; b &lt;tag&gt; next")
