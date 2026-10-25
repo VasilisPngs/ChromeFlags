@@ -39,16 +39,17 @@ jobs:
             && git diff --name-only "$BEFORE" HEAD | grep -qx "chromeflags.py"; then
             FLAGS_ARG="--force"
           fi
-          TITLE="$(python3 chromeflags.py $FLAGS_ARG)"
+          STATUS=0
+          TITLE="$(python3 chromeflags.py $FLAGS_ARG)" || STATUS=$?
           echo "## $TITLE" >> "$GITHUB_STEP_SUMMARY"
           git add -A
           if git diff --staged --quiet; then
-            exit 0
+            exit "$STATUS"
           fi
           git commit -m "flags: $TITLE"
           for attempt in 1 2 3; do
             if git push; then
-              exit 0
+              exit "$STATUS"
             fi
             git fetch origin main
             git rebase origin/main

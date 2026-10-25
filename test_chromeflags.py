@@ -1,4 +1,6 @@
+import contextlib
 import http.client
+import io
 import json
 import unittest
 import unittest.mock
@@ -198,7 +200,7 @@ class TestChromeFlags(unittest.TestCase):
         };
         """
         entry = entries(source)["alpha"][0]
-        self.assertEqual(chromeflags.describe("alpha", entry, {}), ("Alpha title", "Alpha description"))
+        self.assertEqual(chromeflags.describe("alpha", entry, {}, []), ("Alpha title", "Alpha description"))
 
     def test_feature_entries_rejects_an_unknown_include(self):
         source = """
@@ -227,7 +229,7 @@ class TestChromeFlags(unittest.TestCase):
         entry = parsed["temporary-unexpire-flags-m155"][0]
         self.assertEqual(entry["os"], {"kOsAll"})
         self.assertEqual(
-            chromeflags.describe("temporary-unexpire-flags-m155", entry, {}),
+            chromeflags.describe("temporary-unexpire-flags-m155", entry, {}, []),
             (
                 "Temporarily unexpire M155 flags.",
                 "Temporarily unexpire flags that expired as of M155. These flags will be removed soon.",
@@ -291,9 +293,25 @@ class TestChromeFlags(unittest.TestCase):
 
     def test_describe_fallback_for_missing_keys(self):
         entry = {"title_key": "kMissingTitle", "desc_key": "kMissingDesc", "os": {"kOsAll"}}
-        title, desc = chromeflags.describe("test-flag", entry, {})
-        self.assertEqual(title, "kMissingTitle")
-        self.assertEqual(desc, "kMissingDesc")
+        problems = []
+        self.assertEqual(chromeflags.describe("test-flag", entry, {}, problems), ("kMissingTitle", "kMissingDesc"))
+        self.assertEqual(problems, [
+            "missing title string kMissingTitle for test-flag",
+            "missing description string kMissingDesc for test-flag",
+        ])
+
+    def test_finish_fails_only_for_lasting_problems(self):
+        busy = urllib.error.HTTPError("https://example.test", 503, "busy", {}, None)
+        missing = urllib.error.HTTPError("https://example.test", 404, "missing", {}, None)
+        self.addCleanup(busy.close)
+        self.addCleanup(missing.close)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(chromeflags.finish([], {"Windows": busy, "Linux": urllib.error.URLError("down")}, []), 0)
+            self.assertEqual(chromeflags.finish([], {"Windows": missing}, []), 1)
+            self.assertEqual(chromeflags.finish([], {"Windows": ValueError("moved")}, []), 1)
+            self.assertEqual(chromeflags.finish([], {}, ["missing title string kTitle for alpha"]), 1)
+            with self.assertRaises(RuntimeError):
+                chromeflags.finish([], {platform["name"]: busy for platform in chromeflags.PLATFORMS}, [])
 
     def test_current_milestone_stops_at_the_settled_phase(self):
         releases = {

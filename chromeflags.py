@@ -123,6 +123,12 @@ SIMPLE_ESCAPES = {
 }
 
 
+def transient(error: Exception) -> bool:
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code in RETRY_CODES
+    return isinstance(error, TRANSIENT_ERRORS)
+
+
 def fetch(url: str) -> str:
     headers = {"User-Agent": "chromeflags", "Accept-Encoding": "gzip"}
     request = urllib.request.Request(url, headers=headers)
@@ -135,12 +141,10 @@ def fetch(url: str) -> str:
                 if response.headers.get("Content-Encoding", "").lower() == "gzip":
                     body = gzip.decompress(body)
                 return body.decode("utf-8", "replace")
-        except urllib.error.HTTPError as error:
-            error.close()
-            if attempt == 3 or error.code not in RETRY_CODES:
-                raise
-        except TRANSIENT_ERRORS:
-            if attempt == 3:
+        except TRANSIENT_ERRORS as error:
+            if isinstance(error, urllib.error.HTTPError):
+                error.close()
+            if attempt == 3 or not transient(error):
                 raise
         attempt += 1
         time.sleep(3 * attempt)
@@ -618,26 +622,25 @@ def resolve(key: str, strings: dict) -> str | None:
     return literal_text(key) if key.startswith('"') else strings.get(key)
 
 
-def describe(flag: str, entry: dict, strings: dict) -> tuple[str, str]:
-    title = resolve(entry["title_key"], strings)
-    desc = resolve(entry["desc_key"], strings)
-    if title is None:
-        print(f"warning: missing title string {entry['title_key']} for {flag}", file=sys.stderr)
-        title = entry["title_key"]
-    if desc is None:
-        print(f"warning: missing description string {entry['desc_key']} for {flag}", file=sys.stderr)
-        desc = entry["desc_key"]
-    return title, desc
+def describe(flag: str, entry: dict, strings: dict, problems: list[str]) -> tuple[str, str]:
+    def text(kind: str, key: str) -> str:
+        value = resolve(key, strings)
+        if value is None:
+            problems.append(f"missing {kind} string {key} for {flag}")
+            return key
+        return value
+
+    return text("title", entry["title_key"]), text("description", entry["desc_key"])
 
 
-def report(platform: str, version: str, strings: dict, added: dict[str, dict]) -> str:
+def report(platform: str, version: str, strings: dict, added: dict[str, dict], problems: list[str]) -> str:
     lines = [f"# {platform} {version}", ""]
     if not added:
         lines.append("This release added no new flags.")
     for position, (flag, entry) in enumerate(added.items()):
         if position:
             lines.extend(["---", ""])
-        title, body = describe(flag, entry, strings)
+        title, body = describe(flag, entry, strings, problems)
         lines.extend([
             f"**{escape(title)}**",
             "",
@@ -649,22 +652,25 @@ def report(platform: str, version: str, strings: dict, added: dict[str, dict]) -
     return "\n".join(lines).rstrip("\n") + "\n"
 
 
-def finish(summary: list[str], skipped: list[str]) -> None:
-    for note in skipped:
+def finish(summary: list[str], skipped: dict[str, Exception], problems: list[str]) -> int:
+    notes = [f"{name}: {error}" for name, error in skipped.items()] + problems
+    for note in notes:
         print(f"warning: {note}", file=sys.stderr)
     if len(skipped) == len(PLATFORMS):
-        raise RuntimeError("; ".join(skipped))
+        raise RuntimeError("; ".join(notes))
     line = " / ".join(summary) or "no flag changes"
     if skipped:
         line = f"{line} (skipped {len(skipped)})"
     print(line)
+    return 0 if all(map(transient, skipped.values())) and not problems else 1
 
 
-def main() -> None:
+def main() -> int:
     force = "--force" in sys.argv
     cache = {}
     summary = []
-    skipped = []
+    skipped = {}
+    problems = []
 
     with ThreadPoolExecutor(max_workers=len(PLATFORMS) + 1) as executor:
         cap = executor.submit(stable_cap)
@@ -679,7 +685,7 @@ def main() -> None:
             try:
                 releases[name] = future.result()
             except Exception as error:
-                skipped.append(f"{name}: {error}")
+                skipped[name] = error
         cap = cap.result()
 
     pending = []
@@ -704,7 +710,7 @@ def main() -> None:
 
             baseline = newest[baseline_milestone][0]
         except Exception as error:
-            skipped.append(f"{name}: {error}")
+            skipped[name] = error
             continue
 
         destination = ROOT / f"{name} {version}.md"
@@ -719,8 +725,7 @@ def main() -> None:
         string_tasks.add((version, source))
 
     if not pending:
-        finish(summary, skipped)
-        return
+        return finish(summary, skipped, problems)
 
     with ThreadPoolExecutor() as executor:
         for version, source in sorted(entry_tasks):
@@ -737,9 +742,9 @@ def main() -> None:
             selected = select(load_entries(version, source, cache), tokens)
             previous = select(load_entries(baseline, source, cache), tokens)
             added = {flag: selected[flag] for flag in sorted(set(selected) - set(previous))}
-            document = report(name, version, load_strings(version, source, cache), added)
+            document = report(name, version, load_strings(version, source, cache), added, problems)
         except Exception as error:
-            skipped.append(f"{name}: {error}")
+            skipped[name] = error
             continue
 
         if destination.exists() and not stale:
@@ -751,8 +756,8 @@ def main() -> None:
         destination.write_text(document, encoding="utf-8")
         summary.append(f"{name} {version} +{len(added)}")
 
-    finish(summary, skipped)
+    return finish(summary, skipped, problems)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
