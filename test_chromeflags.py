@@ -8,7 +8,7 @@ import zlib
 import chromeflags
 
 
-def entries(source: str, names: dict[str, str] | None = None) -> dict[str, dict]:
+def entries(source: str, names: dict[str, str] | None = None) -> dict[str, list[dict]]:
     return chromeflags.parse_entries(chromeflags.strip_cpp_comments(source), names or {})
 
 
@@ -38,10 +38,10 @@ class TestChromeFlags(unittest.TestCase):
              FEATURE_VALUE_TYPE(kAlpha)},
         });
         """
-        parsed = entries(source)
-        self.assertEqual(parsed["alpha"]["title_key"], "kAlphaTitle")
-        self.assertEqual(parsed["alpha"]["desc_key"], "kAlphaDescription")
-        self.assertEqual(parsed["alpha"]["os"], {"kOsDesktop", "kOsAll"})
+        self.assertEqual(
+            entries(source)["alpha"],
+            [{"title_key": "kAlphaTitle", "desc_key": "kAlphaDescription", "os": {"kOsDesktop", "kOsAll"}}],
+        )
 
     def test_parse_entries_handles_nested_commas(self):
         source = """
@@ -60,7 +60,7 @@ class TestChromeFlags(unittest.TestCase):
         """
         parsed = entries(source)
         self.assertEqual(set(parsed), {"alpha", "beta"})
-        self.assertEqual(parsed["beta"]["os"], {"kOsAndroid"})
+        self.assertEqual(parsed["beta"][0]["os"], {"kOsAndroid"})
 
     def test_parse_entries_resolves_identifier_flag_names(self):
         source = """
@@ -80,8 +80,8 @@ class TestChromeFlags(unittest.TestCase):
         """
         parsed = entries(source, {"kDelta": "delta"})
         self.assertEqual(set(parsed), {"gamma", "delta"})
-        self.assertEqual(parsed["gamma"]["os"], {"kOsWin"})
-        self.assertEqual(parsed["delta"]["title_key"], "kDeltaTitle")
+        self.assertEqual(parsed["gamma"][0]["os"], {"kOsWin"})
+        self.assertEqual(parsed["delta"][0]["title_key"], "kDeltaTitle")
 
     def test_parse_entries_rejects_unresolvable_identifier(self):
         source = """
@@ -109,7 +109,7 @@ class TestChromeFlags(unittest.TestCase):
         with self.assertRaises(ValueError):
             entries(source)
 
-    def test_parse_entries_merges_duplicate_flag_names(self):
+    def test_parse_entries_keeps_every_entry_of_a_flag(self):
         source = """
         constexpr auto kFeatureEntries = {
             {"alpha",
@@ -124,8 +124,7 @@ class TestChromeFlags(unittest.TestCase):
              nullptr},
         };
         """
-        parsed = entries(source)
-        self.assertEqual(parsed["alpha"]["os"], {"kOsWin", "kOsAndroid"})
+        self.assertEqual([variant["os"] for variant in entries(source)["alpha"]], [{"kOsWin"}, {"kOsAndroid"}])
 
     def test_parse_entries_detects_incomplete_parsing(self):
         source = """
@@ -152,10 +151,10 @@ class TestChromeFlags(unittest.TestCase):
         """
         parsed = entries(source)
         self.assertEqual(set(parsed), {"alpha", "beta"})
-        self.assertEqual(parsed["alpha"]["os"], {"kOsAndroid"})
-        self.assertEqual(parsed["beta"]["os"], {"kOsWin"})
+        self.assertEqual([variant["os"] for variant in parsed["alpha"]], [{"kOsAndroid"}])
+        self.assertEqual(parsed["beta"][0]["os"], {"kOsWin"})
 
-    def test_parse_entries_merges_alternative_entries_from_every_branch(self):
+    def test_parse_entries_keeps_alternative_entries_from_every_branch(self):
         source = """
         constexpr auto kFeatureEntries = {
         #if BUILDFLAG(IS_CHROMEOS)
@@ -168,7 +167,7 @@ class TestChromeFlags(unittest.TestCase):
         #endif
         };
         """
-        self.assertEqual(entries(source)["gamma"]["os"], {"kOsCrOS", "kOsWin", "kOsMac"})
+        self.assertEqual([variant["os"] for variant in entries(source)["gamma"]], [{"kOsCrOS"}, {"kOsWin", "kOsMac"}])
 
     def test_feature_entries_rejects_an_initializer_that_closes_early(self):
         source = """
@@ -188,7 +187,7 @@ class TestChromeFlags(unittest.TestCase):
             {"alpha", "Alpha title", "Alpha " "description", kOsAll, nullptr},
         };
         """
-        entry = entries(source)["alpha"]
+        entry = entries(source)["alpha"][0]
         self.assertEqual(chromeflags.describe("alpha", entry, {}), ("Alpha title", "Alpha description"))
 
     def test_feature_entries_rejects_an_unknown_include(self):
@@ -215,7 +214,7 @@ class TestChromeFlags(unittest.TestCase):
         with unittest.mock.patch.object(chromeflags, "fetch_chromium", return_value=generator):
             parsed = chromeflags.parse_entries(chromeflags.expand_unexpire(source, "156.0.8078.49"), {})
         self.assertEqual(set(parsed), {"alpha", "temporary-unexpire-flags-m154", "temporary-unexpire-flags-m155"})
-        entry = parsed["temporary-unexpire-flags-m155"]
+        entry = parsed["temporary-unexpire-flags-m155"][0]
         self.assertEqual(entry["os"], {"kOsAll"})
         self.assertEqual(
             chromeflags.describe("temporary-unexpire-flags-m155", entry, {}),
@@ -232,12 +231,30 @@ class TestChromeFlags(unittest.TestCase):
 
     def test_select_includes_kos_all(self):
         table = {
-            "shared": {"os": {"kOsAll"}},
-            "desktop": {"os": {"kOsDesktop"}},
-            "android": {"os": {"kOsAndroid"}},
+            "shared": [{"os": {"kOsAll"}}],
+            "desktop": [{"os": {"kOsDesktop"}}],
+            "android": [{"os": {"kOsAndroid"}}],
         }
         selected = chromeflags.select(table, {"kOsWin", "kOsAll", "kOsDesktop"})
         self.assertEqual(set(selected), {"shared", "desktop"})
+
+    def test_select_takes_the_entry_of_each_platform(self):
+        source = """
+        constexpr auto kFeatureEntries = {
+        #if BUILDFLAG(IS_WIN)
+            {"use-angle", flag_descriptions::kUseAngleName,
+             flag_descriptions::kUseAngleDescriptionWindows, kOsWin, nullptr},
+        #elif BUILDFLAG(IS_ANDROID)
+            {"use-angle", flag_descriptions::kUseAngleName,
+             flag_descriptions::kUseAngleDescriptionAndroid, kOsAndroid, nullptr},
+        #endif
+        };
+        """
+        parsed = entries(source)
+        windows = chromeflags.select(parsed, {"kOsWin", "kOsAll"})
+        android = chromeflags.select(parsed, {"kOsAndroid", "kOsAll"})
+        self.assertEqual(windows["use-angle"]["desc_key"], "kUseAngleDescriptionWindows")
+        self.assertEqual(android["use-angle"]["desc_key"], "kUseAngleDescriptionAndroid")
 
     def test_parse_strings_supports_concatenated_literals_and_escapes(self):
         source = r'''

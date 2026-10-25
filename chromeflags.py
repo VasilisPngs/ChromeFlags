@@ -329,11 +329,11 @@ def flag_name(expression: str, names: dict[str, str]) -> str | None:
     return names.get("".join(expression.split()).rpartition("::")[2])
 
 
-def parse_entries(clean: str, names: dict[str, str]) -> dict[str, dict]:
+def parse_entries(clean: str, names: dict[str, str]) -> dict[str, list[dict]]:
     pool = dict(names)
     pool.update(parse_strings(clean))
 
-    result: dict[str, dict] = {}
+    result: dict[str, list[dict]] = {}
     unparsed = []
 
     for block in entry_blocks(feature_entries(clean)):
@@ -348,15 +348,11 @@ def parse_entries(clean: str, names: dict[str, str]) -> dict[str, dict]:
             unparsed.append(block)
             continue
 
-        entry = result.get(flag)
-        if entry is None:
-            result[flag] = {
-                "title_key": string_key(fields[1]),
-                "desc_key": string_key(fields[2]),
-                "os": os_tokens,
-            }
-        else:
-            entry["os"] |= os_tokens
+        result.setdefault(flag, []).append({
+            "title_key": string_key(fields[1]),
+            "desc_key": string_key(fields[2]),
+            "os": os_tokens,
+        })
 
     if unparsed:
         details = "; ".join(" ".join(block.split())[:80] for block in unparsed)
@@ -507,7 +503,7 @@ def expand_unexpire(clean: str, version: str) -> str:
     return clean.replace(UNEXPIRE_INCLUDE, fragment)
 
 
-def load_entries(version: str, source: str, cache: dict) -> dict[str, dict]:
+def load_entries(version: str, source: str, cache: dict) -> dict[str, list[dict]]:
     key = ("entries", version, source)
     with CACHE_LOCK:
         if key in cache:
@@ -590,8 +586,14 @@ def current_milestone(releases: dict[int, tuple[str, int]], cap: int | None) -> 
     return max(releases)
 
 
-def select(entries: dict[str, dict], tokens: set[str]) -> dict[str, dict]:
-    return {flag: entry for flag, entry in entries.items() if entry["os"] & tokens}
+def select(entries: dict[str, list[dict]], tokens: set[str]) -> dict[str, dict]:
+    selected = {}
+    for flag, variants in entries.items():
+        for variant in variants:
+            if variant["os"] & tokens:
+                selected[flag] = variant
+                break
+    return selected
 
 
 def escape(text: str) -> str:
