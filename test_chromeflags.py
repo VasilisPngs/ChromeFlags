@@ -109,6 +109,16 @@ class TestChromeFlags(unittest.TestCase):
         with self.assertRaises(ValueError):
             entries(source)
 
+    def test_parse_entries_rejects_an_unknown_platform_token(self):
+        source = """
+        constexpr auto kFeatureEntries = {
+            {"alpha", flag_descriptions::kAlphaTitle,
+             flag_descriptions::kAlphaDescription, kOsAndroidDesktop, nullptr},
+        };
+        """
+        with self.assertRaises(ValueError):
+            entries(source)
+
     def test_parse_entries_keeps_every_entry_of_a_flag(self):
         source = """
         constexpr auto kFeatureEntries = {

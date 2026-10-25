@@ -76,6 +76,11 @@ PLATFORMS = [
     },
 ]
 
+KNOWN_TOKENS = frozenset().union(
+    {"kOsCrOS", "kOsCrOSOwnerOnly", "kOsFuchsia", "kOsWebView"},
+    *(platform["tokens"] for platform in PLATFORMS),
+)
+
 UNEXPIRE_INCLUDE = '#include "chrome/browser/unexpire_flags_gen.inc"'
 UNEXPIRE_GENERATOR = "tools/flags/generate_unexpire_flags.py"
 UNEXPIRE_LOGIC = ("return [mstone - 1, mstone]", "gen_flags_fragment(progname, mstone - 1)")
@@ -347,6 +352,9 @@ def parse_entries(clean: str, names: dict[str, str]) -> dict[str, list[dict]]:
         if flag is None or not os_tokens:
             unparsed.append(block)
             continue
+        unknown = os_tokens - KNOWN_TOKENS
+        if unknown:
+            raise ValueError(f"{flag} uses unknown platform tokens: {', '.join(sorted(unknown))}")
 
         result.setdefault(flag, []).append({
             "title_key": string_key(fields[1]),
