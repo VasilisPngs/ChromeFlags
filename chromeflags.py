@@ -317,6 +317,8 @@ def entry_blocks(body: str) -> list[str]:
             depth -= 1
             if depth == 0:
                 blocks.append(body[start:index])
+        elif depth == 0 and char != "," and not char.isspace():
+            raise ValueError(f"unexpected text between flag entries: {' '.join(body[index:index + 80].split())}")
 
     if depth:
         raise ValueError("unterminated flag entry block")

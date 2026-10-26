@@ -181,6 +181,16 @@ class TestChromeFlags(unittest.TestCase):
         """
         self.assertEqual([variant["os"] for variant in entries(source)["gamma"]], [{"kOsCrOS"}, {"kOsWin", "kOsMac"}])
 
+    def test_parse_entries_rejects_an_entry_written_without_braces(self):
+        source = """
+        constexpr auto kFeatureEntries = {
+            {"alpha", "Alpha", "Alpha flag", kOsAll, nullptr},
+            FLAG_ENTRY("beta", "Beta", "Beta flag", kOsAll),
+        };
+        """
+        with self.assertRaises(ValueError):
+            entries(source)
+
     def test_feature_entries_rejects_an_initializer_that_closes_early(self):
         source = """
         constexpr auto kFeatureEntries = {
