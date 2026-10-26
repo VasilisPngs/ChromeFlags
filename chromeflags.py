@@ -591,17 +591,16 @@ def stable_cap() -> int:
 
 
 def current_milestone(releases: dict[int, tuple[str, int]], cap: int) -> int:
-    timed = len({released for _, released in releases.values()}) > 1
-    for milestone in sorted(releases, reverse=True):
-        if milestone <= cap:
-            return milestone
-        if timed and all(
+    return next(
+        milestone
+        for milestone in sorted(releases, reverse=True)
+        if milestone <= cap
+        or all(
             released < releases[milestone][1]
             for lower, (_, released) in releases.items()
             if lower < milestone
-        ):
-            return milestone
-    return max(releases)
+        )
+    )
 
 
 def select(entries: dict[str, list[dict]], tokens: set[str]) -> dict[str, dict]:
