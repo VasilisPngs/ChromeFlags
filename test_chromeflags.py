@@ -358,14 +358,13 @@ class TestChromeFlags(unittest.TestCase):
             153: ("153.0.8010.55", 3_000),
             155: ("155.0.8059.12", 3_000),
         }
-        self.assertEqual(chromeflags.current_milestone(releases, None), 153)
+        self.assertEqual(chromeflags.current_milestone(releases, 152), 153)
 
-    def test_current_milestone_without_a_cap_takes_a_settled_milestone(self):
-        releases = {
-            153: ("153.0.8010.24", 2_000),
-            154: ("154.0.8037.41", 5_000),
-        }
-        self.assertEqual(chromeflags.current_milestone(releases, None), 154)
+    def test_stable_cap_rejects_phases_without_a_stable_milestone(self):
+        payload = json.dumps([{"milestone": 157, "schedule_phase": "stable_cut"}, {"milestone": 156}])
+        with unittest.mock.patch.object(chromeflags, "fetch", return_value=payload):
+            with self.assertRaises(ValueError):
+                chromeflags.stable_cap()
 
     def test_current_milestone_accepts_a_single_milestone(self):
         self.assertEqual(chromeflags.current_milestone({153: ("153.0.8010.47", 9)}, 154), 153)
@@ -399,7 +398,7 @@ class TestChromeFlags(unittest.TestCase):
 
     def test_current_milestone_falls_back_to_the_newest_without_any_signal(self):
         releases = {153: ("153.0.8010.55", 0), 154: ("154.0.8037.58", 0)}
-        self.assertEqual(chromeflags.current_milestone(releases, None), 154)
+        self.assertEqual(chromeflags.current_milestone(releases, 152), 154)
 
     def test_fetch_retries_transient_transport_errors(self):
         class Response:

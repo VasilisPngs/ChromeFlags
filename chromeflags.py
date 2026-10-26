@@ -576,24 +576,22 @@ def stable(platform: str) -> dict[int, tuple[str, int]]:
     return releases
 
 
-def stable_cap() -> int | None:
-    try:
-        data = json.loads(fetch(f"{DASH}/fetch_milestones?num=8"))
-        settled = [
-            item["milestone"]
-            for item in data
-            if item.get("schedule_phase") == "stable" and isinstance(item.get("milestone"), int)
-        ]
-    except Exception as error:
-        print(f"warning: milestone phases unavailable: {error}", file=sys.stderr)
-        return None
-    return max(settled) if settled else None
+def stable_cap() -> int:
+    data = json.loads(fetch(f"{DASH}/fetch_milestones?num=8"))
+    settled = [
+        item["milestone"]
+        for item in data
+        if item.get("schedule_phase") == "stable" and isinstance(item.get("milestone"), int)
+    ]
+    if not settled:
+        raise ValueError("fetch_milestones lists no milestone in the stable phase")
+    return max(settled)
 
 
-def current_milestone(releases: dict[int, tuple[str, int]], cap: int | None) -> int:
+def current_milestone(releases: dict[int, tuple[str, int]], cap: int) -> int:
     timed = len({released for _, released in releases.values()}) > 1
     for milestone in sorted(releases, reverse=True):
-        if cap is not None and milestone <= cap:
+        if milestone <= cap:
             return milestone
         if timed and all(
             released < releases[milestone][1]
@@ -692,7 +690,14 @@ def main() -> int:
                 releases[name] = future.result()
             except Exception as error:
                 skipped[name] = error
-        cap = cap.result()
+        try:
+            cap = cap.result()
+        except Exception as error:
+            if transient(error):
+                print(f"warning: milestone phases unavailable: {error}", file=sys.stderr)
+            else:
+                problems.append(f"milestone phases unavailable: {error}")
+            return finish(summary, skipped, problems)
 
     pending = []
     entry_tasks = set()
