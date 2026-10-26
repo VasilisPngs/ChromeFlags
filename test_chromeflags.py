@@ -386,6 +386,17 @@ class TestChromeFlags(unittest.TestCase):
             releases = chromeflags.stable("Windows")
         self.assertEqual(releases, {154: ("154.0.8037.58", 0), 153: ("153.0.8010.55", 0)})
 
+    def test_stable_dates_a_milestone_by_its_latest_release(self):
+        payload = json.dumps([
+            {"version": "153.0.8010.27", "time": 3_000},
+            {"version": "152.0.7977.78", "time": 3_000},
+            {"version": "152.0.7977.83", "time": 2_000},
+        ])
+        with unittest.mock.patch.object(chromeflags, "fetch", return_value=payload):
+            releases = chromeflags.stable("Windows")
+        self.assertEqual(releases[152], ("152.0.7977.83", 3_000))
+        self.assertEqual(chromeflags.current_milestone(releases, 152), 152)
+
     def test_current_milestone_falls_back_to_the_newest_without_any_signal(self):
         releases = {153: ("153.0.8010.55", 0), 154: ("154.0.8037.58", 0)}
         self.assertEqual(chromeflags.current_milestone(releases, None), 154)

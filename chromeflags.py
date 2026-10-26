@@ -569,10 +569,8 @@ def stable(platform: str) -> dict[int, tuple[str, int]]:
             parsed = number(version)
         except ValueError:
             continue
-        milestone = parsed[0]
-        known = releases.get(milestone)
-        if known is None or parsed > number(known[0]):
-            releases[milestone] = (version, int(released))
+        newest, latest = releases.get(parsed[0], (version, 0))
+        releases[parsed[0]] = (max(version, newest, key=number), max(latest, int(released)))
     if not releases:
         raise ValueError("no Stable release listed")
     return releases
