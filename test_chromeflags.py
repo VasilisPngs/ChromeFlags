@@ -511,6 +511,14 @@ class TestChromeFlags(unittest.TestCase):
                 chromeflags.fetch("https://example.test")
         self.assertEqual(opener.call_count, 1)
 
+    def test_fetch_retries_a_gateway_timeout(self):
+        error = urllib.error.HTTPError("https://example.test", 504, "deadline exceeded", {}, None)
+        with unittest.mock.patch.object(chromeflags.urllib.request, "urlopen", side_effect=error) as opener, \
+                unittest.mock.patch.object(chromeflags.time, "sleep"):
+            with self.assertRaises(urllib.error.HTTPError):
+                chromeflags.fetch("https://example.test")
+        self.assertEqual(opener.call_count, 4)
+
     def test_number_validates_chrome_versions(self):
         self.assertEqual(chromeflags.number("153.0.8010.12"), (153, 0, 8010, 12))
         with self.assertRaises(ValueError):

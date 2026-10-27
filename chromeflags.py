@@ -16,7 +16,7 @@ from pathlib import Path
 DASH = "https://chromiumdash.appspot.com"
 ROOT = Path(__file__).resolve().parent
 CACHE_LOCK = threading.Lock()
-RETRY_CODES = frozenset({403, 429, 500, 502, 503})
+RETRY_CODES = frozenset({403, 429, 500, 502, 503, 504})
 TRANSIENT_ERRORS = (OSError, http.client.HTTPException, zlib.error, EOFError)
 
 SOURCES = {
