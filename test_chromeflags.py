@@ -2,6 +2,7 @@ import contextlib
 import http.client
 import io
 import json
+import textwrap
 import unittest
 import unittest.mock
 import urllib.error
@@ -12,6 +13,10 @@ import chromeflags
 
 def entries(source: str, names: dict[str, str] | None = None) -> dict[str, list[dict]]:
     return chromeflags.parse_entries(chromeflags.strip_cpp_comments(source), names or {})
+
+
+def platform(name: str) -> dict:
+    return next(item for item in chromeflags.PLATFORMS if item["name"] == name)
 
 
 class TestChromeFlags(unittest.TestCase):
@@ -42,7 +47,12 @@ class TestChromeFlags(unittest.TestCase):
         """
         self.assertEqual(
             entries(source)["alpha"],
-            [{"title_key": "kAlphaTitle", "desc_key": "kAlphaDescription", "os": {"kOsDesktop", "kOsAll"}}],
+            [{
+                "title_key": "kAlphaTitle",
+                "desc_key": "kAlphaDescription",
+                "os": {"kOsDesktop", "kOsAll"},
+                "hidden": frozenset(),
+            }],
         )
 
     def test_parse_entries_handles_nested_commas(self):
@@ -276,12 +286,63 @@ class TestChromeFlags(unittest.TestCase):
 
     def test_select_includes_kos_all(self):
         table = {
-            "shared": [{"os": {"kOsAll"}}],
-            "desktop": [{"os": {"kOsDesktop"}}],
-            "android": [{"os": {"kOsAndroid"}}],
+            "shared": [{"os": {"kOsAll"}, "hidden": frozenset()}],
+            "desktop": [{"os": {"kOsDesktop"}, "hidden": frozenset()}],
+            "android": [{"os": {"kOsAndroid"}, "hidden": frozenset()}],
         }
-        selected = chromeflags.select(table, {"kOsWin", "kOsAll", "kOsDesktop"})
+        selected = chromeflags.select(table, platform("Windows"))
         self.assertEqual(set(selected), {"shared", "desktop"})
+
+    def test_select_leaves_out_flags_that_stable_hides(self):
+        source = textwrap.dedent("""
+        constexpr char kIsolatedName[] = "isolated";
+        constexpr char kPaymentsName[] = "payments";
+        constexpr char kFormName[] = "form";
+        constexpr char kExtensionName[] = "extension";
+        constexpr auto kFeatureEntries = {
+            {kIsolatedName, "Isolated", "Isolated flag", kOsAll, nullptr},
+            {kPaymentsName, "Payments", "Payments flag", kOsAll, nullptr},
+            {kFormName, "Form", "Form flag", kOsAndroid, nullptr},
+            {kExtensionName, "Extension", "Extension flag", kOsDesktop, nullptr},
+        };
+
+        bool ShouldSkipConditionalFeatureEntry(const flags_ui::FlagsStorage* storage,
+                                               const FeatureEntry& entry) {
+          version_info::Channel channel = chrome::GetChannel();
+        #if BUILDFLAG(ENABLE_EXTENSIONS)
+          if (std::string_view(kExtensionName) == entry.internal_name) {
+            return channel != version_info::Channel::BETA &&
+                   channel != version_info::Channel::DEV &&
+                   channel != version_info::Channel::CANARY &&
+                   channel != version_info::Channel::UNKNOWN;
+          }
+        #endif
+        #if BUILDFLAG(IS_ANDROID)
+          if (std::string_view(
+                  kPaymentsName) ==
+              entry.internal_name) {
+            return channel != version_info::Channel::BETA &&
+                   channel != version_info::Channel::DEV &&
+                   channel != version_info::Channel::CANARY &&
+                   channel != version_info::Channel::UNKNOWN;
+          }
+          if (std::string_view(kFormName) == entry.internal_name) {
+            return ui::GetDeviceFormFactor() != ui::DEVICE_FORM_FACTOR_DESKTOP;
+          }
+        #endif  // BUILDFLAG(IS_ANDROID)
+          if (std::string_view(kIsolatedName) ==
+              entry.internal_name) {
+            return channel != version_info::Channel::BETA &&
+                   channel != version_info::Channel::DEV &&
+                   channel != version_info::Channel::CANARY &&
+                   channel != version_info::Channel::UNKNOWN;
+          }
+          return false;
+        }
+        """)
+        parsed = entries(source)
+        self.assertEqual(set(chromeflags.select(parsed, platform("Windows"))), {"payments", "extension"})
+        self.assertEqual(set(chromeflags.select(parsed, platform("Android"))), {"form"})
 
     def test_select_takes_the_entry_of_each_platform(self):
         source = """
@@ -296,8 +357,8 @@ class TestChromeFlags(unittest.TestCase):
         };
         """
         parsed = entries(source)
-        windows = chromeflags.select(parsed, {"kOsWin", "kOsAll"})
-        android = chromeflags.select(parsed, {"kOsAndroid", "kOsAll"})
+        windows = chromeflags.select(parsed, platform("Windows"))
+        android = chromeflags.select(parsed, platform("Android"))
         self.assertEqual(windows["use-angle"]["desc_key"], "kUseAngleDescriptionWindows")
         self.assertEqual(android["use-angle"]["desc_key"], "kUseAngleDescriptionAndroid")
 

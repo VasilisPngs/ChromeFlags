@@ -51,31 +51,38 @@ PLATFORMS = [
     {
         "name": "Windows",
         "source": "desktop",
+        "buildflag": "IS_WIN",
         "tokens": {"kOsWin", "kOsAll", "kOsDesktop", "kOsAura"},
     },
     {
         "name": "macOS",
         "dash": "Mac",
         "source": "desktop",
+        "buildflag": "IS_MAC",
         "tokens": {"kOsMac", "kOsAll", "kOsDesktop"},
     },
     {
         "name": "Linux",
         "source": "desktop",
+        "buildflag": "IS_LINUX",
         "tokens": {"kOsLinux", "kOsAll", "kOsDesktop", "kOsAura"},
     },
     {
         "name": "Android",
         "source": "desktop",
+        "buildflag": "IS_ANDROID",
         "tokens": {"kOsAndroid", "kOsAll"},
     },
     {
         "name": "iOS-iPadOS",
         "dash": "iOS",
         "source": "ios",
+        "buildflag": "IS_IOS",
         "tokens": {"kOsIos"},
     },
 ]
+
+OS_BUILDFLAGS = frozenset({"IS_WIN", "IS_MAC", "IS_LINUX", "IS_ANDROID", "IS_CHROMEOS", "IS_IOS", "IS_FUCHSIA"})
 
 KNOWN_TOKENS = frozenset().union(
     {"kOsCrOS", "kOsCrOSOwnerOnly", "kOsFuchsia", "kOsWebView"},
@@ -107,6 +114,15 @@ FLAG_LITERAL_RE = re.compile(r'"([A-Za-z0-9][A-Za-z0-9._-]*)"')
 DIRECTIVE_RE = re.compile(r"[ \t]*#[ \t]*(\w*)")
 INCLUDE_RE = re.compile(r'[ \t]*#[ \t]*include[ \t]*["<]([^">]*)[">]')
 TERMINATOR_RE = re.compile(r"\s*[;)]")
+SKIP_FUNCTION = "bool ShouldSkipConditionalFeatureEntry("
+STABLE_HIDDEN_RE = re.compile(
+    r"if \(std::string_view\(\s*(?:\w+::)*(k\w+)\) ==\s*entry\.internal_name\) \{\s*"
+    r"return channel != version_info::Channel::BETA &&\s*"
+    r"channel != version_info::Channel::DEV &&\s*"
+    r"channel != version_info::Channel::CANARY &&\s*"
+    r"channel != version_info::Channel::UNKNOWN;\s*\}"
+)
+PLATFORM_CONDITION_RE = re.compile(r"\s*(!?)\s*BUILDFLAG\((\w+)\)\s*")
 
 HEX_DIGITS = "0123456789abcdefABCDEF"
 SIMPLE_ESCAPES = {
@@ -341,9 +357,60 @@ def flag_name(expression: str, names: dict[str, str]) -> str | None:
     return names.get("".join(expression.split()).rpartition("::")[2])
 
 
+def condition_holds(condition: str, buildflag: str) -> bool | None:
+    match = PLATFORM_CONDITION_RE.fullmatch(condition)
+    if not match or match.group(2) not in OS_BUILDFLAGS:
+        return None
+    return (match.group(2) == buildflag) != bool(match.group(1))
+
+
+def branch_taken(frame: list[tuple[str, str]], buildflag: str) -> bool | None:
+    values = [
+        True if word == "else" else condition_holds(condition, buildflag) if word in ("if", "elif") else None
+        for word, condition in frame
+    ]
+    if None in values:
+        return None
+    return values[-1] and not any(values[:-1])
+
+
+def stable_hidden(clean: str, names: dict[str, str]) -> dict[str, frozenset[str]]:
+    start = clean.find(SKIP_FUNCTION)
+    end = clean.find("\n}\n", start)
+    if start < 0 or end < 0:
+        return {}
+    body = clean[start:end]
+    hidden = {}
+
+    for rule in STABLE_HIDDEN_RE.finditer(body):
+        frames = []
+        for line in body[:rule.start()].split("\n"):
+            directive = DIRECTIVE_RE.match(line)
+            if not directive:
+                continue
+            word = directive.group(1)
+            if word in ("if", "ifdef", "ifndef"):
+                frames.append([(word, line[directive.end():])])
+            elif frames and word in ("elif", "elifdef", "elifndef", "else"):
+                frames[-1].append((word, line[directive.end():]))
+            elif frames and word == "endif":
+                frames.pop()
+        platforms = frozenset(
+            platform["name"]
+            for platform in PLATFORMS
+            if all(branch_taken(frame, platform["buildflag"]) for frame in frames)
+        )
+        flag = names.get(rule.group(1))
+        if flag and platforms:
+            hidden[flag] = platforms
+
+    return hidden
+
+
 def parse_entries(clean: str, names: dict[str, str]) -> dict[str, list[dict]]:
     pool = dict(names)
     pool.update(parse_strings(clean))
+    hidden = stable_hidden(clean, pool)
 
     result: dict[str, list[dict]] = {}
     unparsed = []
@@ -367,6 +434,7 @@ def parse_entries(clean: str, names: dict[str, str]) -> dict[str, list[dict]]:
             "title_key": string_key(fields[1]),
             "desc_key": string_key(fields[2]),
             "os": os_tokens,
+            "hidden": hidden.get(flag, frozenset()),
         })
 
     if unparsed:
@@ -603,11 +671,11 @@ def current_milestone(releases: dict[int, tuple[str, int]], cap: int) -> int:
     )
 
 
-def select(entries: dict[str, list[dict]], tokens: set[str]) -> dict[str, dict]:
+def select(entries: dict[str, list[dict]], platform: dict) -> dict[str, dict]:
     selected = {}
     for flag, variants in entries.items():
         for variant in variants:
-            if variant["os"] & tokens:
+            if variant["os"] & platform["tokens"] and platform["name"] not in variant["hidden"]:
                 selected[flag] = variant
                 break
     return selected
@@ -748,11 +816,10 @@ def main() -> int:
     for platform, version, baseline, destination, stale in pending:
         name = platform["name"]
         source = platform["source"]
-        tokens = platform["tokens"]
 
         try:
-            selected = select(load_entries(version, source, cache), tokens)
-            previous = select(load_entries(baseline, source, cache), tokens)
+            selected = select(load_entries(version, source, cache), platform)
+            previous = select(load_entries(baseline, source, cache), platform)
             added = {flag: selected[flag] for flag in sorted(set(selected) - set(previous))}
             document = report(name, version, load_strings(version, source, cache), added, problems)
         except Exception as error:
