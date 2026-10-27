@@ -1,4 +1,4 @@
-# Linux 156.0.8078.47
+# macOS 156.0.8078.74
 
 **Enable Autofill Cardholder Name Fix Flow**
 
@@ -133,6 +133,14 @@ Enables GLIC experimental triggering
 Enables direct ScriptTool action execution for Glic experimental triggering tasks.
 
 `chrome://flags/#glic-experimental-triggering-script-tools`
+
+---
+
+**Enable Ping SSO for enterprise browsers.**
+
+Enables native support for Ping Identity SSO on managed MacOS devices.
+
+`chrome://flags/#mac-enable-ping-sso`
 
 ---
 
