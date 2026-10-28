@@ -519,6 +519,14 @@ class TestChromeFlags(unittest.TestCase):
                 chromeflags.fetch("https://example.test")
         self.assertEqual(opener.call_count, 4)
 
+    def test_overdue_counts_a_day_from_the_release(self):
+        day = chromeflags.REPORT_DEADLINE_MS
+        with unittest.mock.patch.object(chromeflags.time, "time", return_value=2_000_000_000):
+            self.assertTrue(chromeflags.overdue(2_000_000_000_000 - day - 1))
+            self.assertFalse(chromeflags.overdue(2_000_000_000_000 - day))
+            self.assertFalse(chromeflags.overdue(2_000_000_000_000))
+            self.assertFalse(chromeflags.overdue(0))
+
     def test_number_validates_chrome_versions(self):
         self.assertEqual(chromeflags.number("153.0.8010.12"), (153, 0, 8010, 12))
         with self.assertRaises(ValueError):

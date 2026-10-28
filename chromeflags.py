@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parent
 CACHE_LOCK = threading.Lock()
 RETRY_CODES = frozenset({403, 429, 500, 502, 503, 504})
 TRANSIENT_ERRORS = (OSError, http.client.HTTPException, zlib.error, EOFError)
+REPORT_DEADLINE_MS = 24 * 60 * 60 * 1000
 
 SOURCES = {
     "desktop": {
@@ -144,6 +145,10 @@ def transient(error: Exception) -> bool:
     if isinstance(error, urllib.error.HTTPError):
         return error.code in RETRY_CODES
     return isinstance(error, TRANSIENT_ERRORS)
+
+
+def overdue(released: int) -> bool:
+    return 0 < released < time.time() * 1000 - REPORT_DEADLINE_MS
 
 
 def fetch(url: str) -> str:
@@ -800,7 +805,7 @@ def main() -> int:
             continue
 
         source = platform["source"]
-        pending.append((platform, version, baseline, destination, stale))
+        pending.append((platform, version, baseline, destination, stale, newest[milestone][1]))
         entry_tasks.update({(version, source), (baseline, source)})
         string_tasks.add((version, source))
 
@@ -813,7 +818,7 @@ def main() -> int:
         for version, source in sorted(string_tasks):
             executor.submit(load_strings, version, source, cache)
 
-    for platform, version, baseline, destination, stale in pending:
+    for platform, version, baseline, destination, stale, released in pending:
         name = platform["name"]
         source = platform["source"]
 
@@ -824,6 +829,8 @@ def main() -> int:
             document = report(name, version, load_strings(version, source, cache), added, problems)
         except Exception as error:
             skipped[name] = error
+            if transient(error) and not destination.exists() and overdue(released):
+                problems.append(f"{name} {version} has no report a day after its release")
             continue
 
         if destination.exists() and not stale:
