@@ -519,13 +519,20 @@ class TestChromeFlags(unittest.TestCase):
                 chromeflags.fetch("https://example.test")
         self.assertEqual(opener.call_count, 4)
 
-    def test_overdue_counts_a_day_from_the_release(self):
+    def test_overdue_counts_a_day_from_the_release_or_the_stable_date(self):
         day = chromeflags.REPORT_DEADLINE_MS
-        with unittest.mock.patch.object(chromeflags.time, "time", return_value=2_000_000_000):
-            self.assertTrue(chromeflags.overdue(2_000_000_000_000 - day - 1))
-            self.assertFalse(chromeflags.overdue(2_000_000_000_000 - day))
-            self.assertFalse(chromeflags.overdue(2_000_000_000_000))
-            self.assertFalse(chromeflags.overdue(0))
+        now = 1_793_750_400
+        schedule = json.dumps({"mstones": [{"mstone": 157, "stable_date": "2026-11-03T00:00:00"}]})
+        with unittest.mock.patch.object(chromeflags.time, "time", return_value=now), \
+                unittest.mock.patch.object(chromeflags, "fetch", return_value=schedule) as fetch:
+            self.assertFalse(chromeflags.overdue(now * 1000 - day, 157))
+            self.assertFalse(chromeflags.overdue(0, 157))
+            fetch.assert_not_called()
+            self.assertFalse(chromeflags.overdue(now * 1000 - 5 * day, 157))
+            fetch.return_value = schedule.replace("11-03", "10-27")
+            self.assertTrue(chromeflags.overdue(now * 1000 - 5 * day, 157))
+            fetch.side_effect = urllib.error.URLError("down")
+            self.assertTrue(chromeflags.overdue(now * 1000 - 5 * day, 157))
 
     def test_number_validates_chrome_versions(self):
         self.assertEqual(chromeflags.number("153.0.8010.12"), (153, 0, 8010, 12))

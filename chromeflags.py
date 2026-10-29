@@ -11,6 +11,7 @@ import urllib.request
 import zlib
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 
 DASH = "https://chromiumdash.appspot.com"
@@ -147,8 +148,16 @@ def transient(error: Exception) -> bool:
     return isinstance(error, TRANSIENT_ERRORS)
 
 
-def overdue(released: int) -> bool:
-    return 0 < released < time.time() * 1000 - REPORT_DEADLINE_MS
+def overdue(released: int, milestone: int) -> bool:
+    deadline = time.time() * 1000 - REPORT_DEADLINE_MS
+    if not 0 < released < deadline:
+        return False
+    try:
+        schedule = json.loads(fetch(f"{DASH}/fetch_milestone_schedule?mstone={milestone}"))
+        stable = datetime.fromisoformat(schedule["mstones"][0]["stable_date"]).replace(tzinfo=timezone.utc)
+    except Exception:
+        return True
+    return stable.timestamp() * 1000 < deadline
 
 
 def fetch(url: str) -> str:
@@ -829,7 +838,7 @@ def main() -> int:
             document = report(name, version, load_strings(version, source, cache), added, problems)
         except Exception as error:
             skipped[name] = error
-            if transient(error) and not destination.exists() and overdue(released):
+            if transient(error) and not destination.exists() and overdue(released, number(version)[0]):
                 problems.append(f"{name} {version} has no report a day after its release")
             continue
 
