@@ -11,7 +11,7 @@ import urllib.request
 import zlib
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 DASH = "https://chromiumdash.appspot.com"
@@ -154,7 +154,7 @@ def overdue(released: int, milestone: int) -> bool:
         return False
     try:
         schedule = json.loads(fetch(f"{DASH}/fetch_milestone_schedule?mstone={milestone}"))
-        stable = datetime.fromisoformat(schedule["mstones"][0]["stable_date"]).replace(tzinfo=timezone.utc)
+        stable = datetime.fromisoformat(schedule["mstones"][0]["stable_date"]).replace(tzinfo=UTC)
     except Exception:
         return True
     return stable.timestamp() * 1000 < deadline
