@@ -1,4 +1,4 @@
-# macOS 156.0.8078.75
+# Windows 156.0.8078.80
 
 **Enable Autofill Cardholder Name Fix Flow**
 
@@ -72,6 +72,14 @@ Enables offering to reopen a search answer in the Contextual Tasks side panel.
 
 ---
 
+**Default Browser Sticky Modal**
+
+Enables the sticky modal dialog for the default browser prompt. Requires #default-browser-prompt-surfaces to be set to a modal dialog variation.
+
+`chrome://flags/#default-browser-sticky-modal`
+
+---
+
 **Headless Live Captions**
 
 Enable features related to headless captions exploration. These are very likely unstable.
@@ -133,14 +141,6 @@ Enables GLIC experimental triggering
 Enables direct ScriptTool action execution for Glic experimental triggering tasks.
 
 `chrome://flags/#glic-experimental-triggering-script-tools`
-
----
-
-**Enable Ping SSO for enterprise browsers.**
-
-Enables native support for Ping Identity SSO on managed MacOS devices.
-
-`chrome://flags/#mac-enable-ping-sso`
 
 ---
 
