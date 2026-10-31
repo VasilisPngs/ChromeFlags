@@ -1,3 +1,4 @@
+import ast
 import base64
 import gzip
 import http.client
@@ -112,6 +113,9 @@ LITERALS_RE = re.compile(LITERALS)
 LITERAL_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
 IDENTIFIER_RE = re.compile(r"(k[A-Za-z0-9_]+)\s*$")
 OS_RE = re.compile(r"\bkOs[A-Za-z]+\b")
+PLATFORM_NAME_RE = re.compile(r"\b(?:\w+::)*(k\w+)\b")
+CAST_RE = re.compile(r"\bstatic_cast\s*<[\w\s]+>")
+NON_OS_BITS = frozenset({"kDeprecated", "kFlagInfrastructure"})
 FLAG_LITERAL_RE = re.compile(r'"([A-Za-z0-9][A-Za-z0-9._-]*)"')
 DIRECTIVE_RE = re.compile(r"[ \t]*#[ \t]*(\w*)")
 INCLUDE_RE = re.compile(r'[ \t]*#[ \t]*include[ \t]*["<]([^">]*)[">]')
@@ -388,6 +392,37 @@ def branch_taken(frame: list[tuple[str, str]], buildflag: str) -> bool | None:
     return values[-1] and not any(values[:-1])
 
 
+def bit(node: ast.expr) -> int:
+    match node:
+        case ast.Constant(value=0 | 1 as value):
+            return value
+        case ast.UnaryOp(op=ast.Invert(), operand=operand):
+            return ~bit(operand)
+        case ast.BinOp(left=left, op=ast.BitAnd(), right=right):
+            return bit(left) & bit(right)
+        case ast.BinOp(left=left, op=ast.BitOr(), right=right):
+            return bit(left) | bit(right)
+    raise ValueError
+
+
+def entry_platforms(expression: str) -> frozenset[str]:
+    code = CAST_RE.sub("", " ".join(expression.split()))
+
+    def shown(platform: dict) -> bool:
+        def value(match: re.Match) -> str:
+            name = match.group(1)
+            if name in KNOWN_TOKENS or name in NON_OS_BITS:
+                return "1" if name in platform["tokens"] else "0"
+            return match.group(0)
+
+        return bool(bit(ast.parse(PLATFORM_NAME_RE.sub(value, code), mode="eval").body) & 1)
+
+    try:
+        return frozenset(platform["name"] for platform in PLATFORMS if shown(platform))
+    except (SyntaxError, ValueError):
+        raise ValueError(f"unsupported platform expression: {code}") from None
+
+
 def stable_hidden(clean: str, names: dict[str, str]) -> dict[str, frozenset[str]]:
     start = clean.find(SKIP_FUNCTION)
     end = clean.find("\n}\n", start)
@@ -447,7 +482,7 @@ def parse_entries(clean: str, names: dict[str, str]) -> dict[str, list[dict]]:
         result.setdefault(flag, []).append({
             "title_key": string_key(fields[1]),
             "desc_key": string_key(fields[2]),
-            "os": os_tokens,
+            "platforms": entry_platforms(fields[3]),
             "hidden": hidden.get(flag, frozenset()),
         })
 
@@ -689,7 +724,7 @@ def select(entries: dict[str, list[dict]], platform: dict) -> dict[str, dict]:
     selected = {}
     for flag, variants in entries.items():
         for variant in variants:
-            if variant["os"] & platform["tokens"] and platform["name"] not in variant["hidden"]:
+            if platform["name"] in variant["platforms"] and platform["name"] not in variant["hidden"]:
                 selected[flag] = variant
                 break
     return selected

@@ -52,7 +52,7 @@ class TestChromeFlags(unittest.TestCase):
             [{
                 "title_key": "kAlphaTitle",
                 "desc_key": "kAlphaDescription",
-                "os": {"kOsDesktop", "kOsAll"},
+                "platforms": frozenset({"Windows", "macOS", "Linux", "Android"}),
                 "hidden": frozenset(),
             }],
         )
@@ -74,7 +74,7 @@ class TestChromeFlags(unittest.TestCase):
         """
         parsed = entries(source)
         self.assertEqual(set(parsed), {"alpha", "beta"})
-        self.assertEqual(parsed["beta"][0]["os"], {"kOsAndroid"})
+        self.assertEqual(parsed["beta"][0]["platforms"], {"Android"})
 
     def test_parse_entries_resolves_identifier_flag_names(self):
         source = """
@@ -94,7 +94,7 @@ class TestChromeFlags(unittest.TestCase):
         """
         parsed = entries(source, {"kDelta": "delta"})
         self.assertEqual(set(parsed), {"gamma", "delta"})
-        self.assertEqual(parsed["gamma"][0]["os"], {"kOsWin"})
+        self.assertEqual(parsed["gamma"][0]["platforms"], {"Windows"})
         self.assertEqual(parsed["delta"][0]["title_key"], "kDeltaTitle")
 
     def test_parse_entries_rejects_unresolvable_identifier(self):
@@ -148,7 +148,7 @@ class TestChromeFlags(unittest.TestCase):
              nullptr},
         };
         """
-        self.assertEqual([variant["os"] for variant in entries(source)["alpha"]], [{"kOsWin"}, {"kOsAndroid"}])
+        self.assertEqual([variant["platforms"] for variant in entries(source)["alpha"]], [{"Windows"}, {"Android"}])
 
     def test_parse_entries_detects_incomplete_parsing(self):
         source = """
@@ -175,8 +175,8 @@ class TestChromeFlags(unittest.TestCase):
         """
         parsed = entries(source)
         self.assertEqual(set(parsed), {"alpha", "beta"})
-        self.assertEqual([variant["os"] for variant in parsed["alpha"]], [{"kOsAndroid"}])
-        self.assertEqual(parsed["beta"][0]["os"], {"kOsWin"})
+        self.assertEqual([variant["platforms"] for variant in parsed["alpha"]], [{"Android"}])
+        self.assertEqual(parsed["beta"][0]["platforms"], {"Windows"})
 
     def test_parse_entries_keeps_alternative_entries_from_every_branch(self):
         source = """
@@ -191,7 +191,7 @@ class TestChromeFlags(unittest.TestCase):
         #endif
         };
         """
-        self.assertEqual([variant["os"] for variant in entries(source)["gamma"]], [{"kOsCrOS"}, {"kOsWin", "kOsMac"}])
+        self.assertEqual([variant["platforms"] for variant in entries(source)["gamma"]], [set(), {"Windows", "macOS"}])
 
     def test_parse_entries_rejects_an_entry_written_without_braces(self):
         source = """
@@ -249,7 +249,7 @@ class TestChromeFlags(unittest.TestCase):
             parsed = chromeflags.parse_entries(chromeflags.expand_unexpire(source, "156.0.8078.49"), {})
         self.assertEqual(set(parsed), {"alpha", "temporary-unexpire-flags-m154", "temporary-unexpire-flags-m155"})
         entry = parsed["temporary-unexpire-flags-m155"][0]
-        self.assertEqual(entry["os"], {"kOsAll"})
+        self.assertEqual(entry["platforms"], {"Windows", "macOS", "Linux", "Android"})
         self.assertEqual(
             chromeflags.describe("temporary-unexpire-flags-m155", entry, {}, []),
             (
@@ -287,13 +287,30 @@ class TestChromeFlags(unittest.TestCase):
             self.assertEqual(set(chromeflags.load_entries("156.0.8078.49", "test", {})), {"current", "lasting"})
 
     def test_select_includes_kos_all(self):
-        table = {
-            "shared": [{"os": {"kOsAll"}, "hidden": frozenset()}],
-            "desktop": [{"os": {"kOsDesktop"}, "hidden": frozenset()}],
-            "android": [{"os": {"kOsAndroid"}, "hidden": frozenset()}],
-        }
-        selected = chromeflags.select(table, platform("Windows"))
-        self.assertEqual(set(selected), {"shared", "desktop"})
+        parsed = entries("""
+        constexpr auto kFeatureEntries = {
+            {"shared", "Shared", "Shared flag", kOsAll, nullptr},
+            {"desktop", "Desktop", "Desktop flag", kOsDesktop, nullptr},
+            {"android", "Android", "Android flag", kOsAndroid, nullptr},
+        };
+        """)
+        self.assertEqual(set(chromeflags.select(parsed, platform("Windows"))), {"shared", "desktop"})
+
+    def test_parse_entries_evaluates_platform_expressions(self):
+        parsed = entries("""
+        constexpr auto kFeatureEntries = {
+            {"most", "Most", "Most flag", kOsAndroid | (kOsDesktop & ~kOsFuchsia), nullptr},
+            {"no-linux", "No Linux", "No Linux flag", kOsDesktop & ~kOsLinux, nullptr},
+            {"cast", "Cast", "Cast flag", static_cast<unsigned short>(kOsMac | kOsWin), nullptr},
+            {"infrastructure", "Infrastructure", "Infrastructure flag", kOsAll | flags_ui::kFlagInfrastructure, nullptr},
+        };
+        """)
+        self.assertEqual({flag: variants[0]["platforms"] for flag, variants in parsed.items()}, {
+            "most": {"Windows", "macOS", "Linux", "Android"},
+            "no-linux": {"Windows", "macOS"},
+            "cast": {"Windows", "macOS"},
+            "infrastructure": {"Windows", "macOS", "Linux", "Android"},
+        })
 
     def test_select_leaves_out_flags_that_stable_hides(self):
         source = textwrap.dedent("""
@@ -436,7 +453,7 @@ class TestChromeFlags(unittest.TestCase):
         self.assertEqual(chromeflags.escape("a & b <tag>\nnext"), "a &amp; b &lt;tag&gt; next")
 
     def test_describe_fallback_for_missing_keys(self):
-        entry = {"title_key": "kMissingTitle", "desc_key": "kMissingDesc", "os": {"kOsAll"}}
+        entry = {"title_key": "kMissingTitle", "desc_key": "kMissingDesc"}
         problems = []
         self.assertEqual(chromeflags.describe("test-flag", entry, {}, problems), ("kMissingTitle", "kMissingDesc"))
         self.assertEqual(problems, [
@@ -629,6 +646,9 @@ class TestChromeFlags(unittest.TestCase):
             'constexpr auto kFeatureEntries = {\n    {"a", "A", "D", kOsAll, value)},\n};',
             'constexpr auto kFeatureEntries = {\n    {"a", "A", "D", kOsAll, value(},\n};',
             'constexpr auto kFeatureEntries = {\n    {"a", GetName(), "D", kOsAll, nullptr},\n};',
+            'constexpr auto kFeatureEntries = {\n    {"a", "A", "D", kOsWin + kOsMac, nullptr},\n};',
+            'constexpr auto kFeatureEntries = {\n    {"a", "A", "D", kOsWin |, nullptr},\n};',
+            'constexpr auto kFeatureEntries = {\n    {"a", "A", "D", kOsWin & kSomeMask, nullptr},\n};',
         ):
             with self.subTest(source=source), self.assertRaises(ValueError):
                 entries(source)
