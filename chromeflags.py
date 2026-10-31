@@ -470,14 +470,10 @@ def parse_entries(clean: str, names: dict[str, str]) -> dict[str, list[dict]]:
             unparsed.append(block)
             continue
 
-        os_tokens = set(OS_RE.findall(fields[3]))
         flag = flag_name(fields[0], pool)
-        if flag is None or not os_tokens:
+        if flag is None or not OS_RE.search(fields[3]):
             unparsed.append(block)
             continue
-        unknown = os_tokens - KNOWN_TOKENS
-        if unknown:
-            raise ValueError(f"{flag} uses unknown platform tokens: {', '.join(sorted(unknown))}")
 
         result.setdefault(flag, []).append({
             "title_key": string_key(fields[1]),
