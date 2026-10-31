@@ -649,6 +649,8 @@ class TestChromeFlags(unittest.TestCase):
             'constexpr auto kFeatureEntries = {\n    {"a", "A", "D", kOsWin + kOsMac, nullptr},\n};',
             'constexpr auto kFeatureEntries = {\n    {"a", "A", "D", kOsWin |, nullptr},\n};',
             'constexpr auto kFeatureEntries = {\n    {"a", "A", "D", kOsWin & kSomeMask, nullptr},\n};',
+            'constexpr auto kFeatureEntries = {\n#if BUILDFLAG(IS_WIN)\n    {"a", "A", "D", kOsAll, nullptr},\n#else\n    {"a", "A", "D", kOsAll,\n#endif\n};',
+            'constexpr auto kFeatureEntries = {\n    {"a", "A", "D", kOsAll,\n#if BUILDFLAG(IS_WIN)\n     nullptr\n#else\n     nullptr},\n#endif\n    },\n#if BUILDFLAG(IS_WIN)\n#else\n    {{"b", "A", "D", kOsAll, nullptr},\n#endif\n};',
         ):
             with self.subTest(source=source), self.assertRaises(ValueError):
                 entries(source)
