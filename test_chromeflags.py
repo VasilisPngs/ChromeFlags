@@ -2,11 +2,13 @@ import contextlib
 import http.client
 import io
 import json
+import tempfile
 import textwrap
 import unittest
 import unittest.mock
 import urllib.error
 import zlib
+from pathlib import Path
 
 import chromeflags
 
@@ -344,6 +346,54 @@ class TestChromeFlags(unittest.TestCase):
         self.assertEqual(set(chromeflags.select(parsed, platform("Windows"))), {"payments", "extension"})
         self.assertEqual(set(chromeflags.select(parsed, platform("Android"))), {"form"})
 
+    def test_select_hides_a_flag_only_on_the_platforms_of_its_branch(self):
+        source = textwrap.dedent("""
+        constexpr char kWindowsName[] = "windows";
+        constexpr char kOtherName[] = "other";
+        constexpr char kMacName[] = "mac";
+        constexpr char kRestName[] = "rest";
+        constexpr auto kFeatureEntries = {
+            {kWindowsName, "Windows", "Windows flag", kOsAll, nullptr},
+            {kOtherName, "Other", "Other flag", kOsAll, nullptr},
+            {kMacName, "Mac", "Mac flag", kOsAll, nullptr},
+            {kRestName, "Rest", "Rest flag", kOsAll, nullptr},
+        };
+
+        bool ShouldSkipConditionalFeatureEntry(const flags_ui::FlagsStorage* storage,
+                                               const FeatureEntry& entry) {
+          version_info::Channel channel = chrome::GetChannel();
+        #if BUILDFLAG(IS_WIN)
+          if (std::string_view(kWindowsName) == entry.internal_name) {
+            return channel != version_info::Channel::BETA && channel != version_info::Channel::DEV &&
+                   channel != version_info::Channel::CANARY && channel != version_info::Channel::UNKNOWN;
+          }
+        #else
+          if (std::string_view(kOtherName) == entry.internal_name) {
+            return channel != version_info::Channel::BETA && channel != version_info::Channel::DEV &&
+                   channel != version_info::Channel::CANARY && channel != version_info::Channel::UNKNOWN;
+          }
+        #endif
+        #if BUILDFLAG(IS_WIN)
+        #elif BUILDFLAG(IS_MAC)
+          if (std::string_view(kMacName) == entry.internal_name) {
+            return channel != version_info::Channel::BETA && channel != version_info::Channel::DEV &&
+                   channel != version_info::Channel::CANARY && channel != version_info::Channel::UNKNOWN;
+          }
+        #else
+          if (std::string_view(kRestName) == entry.internal_name) {
+            return channel != version_info::Channel::BETA && channel != version_info::Channel::DEV &&
+                   channel != version_info::Channel::CANARY && channel != version_info::Channel::UNKNOWN;
+          }
+        #endif
+          return false;
+        }
+        """)
+        parsed = entries(source)
+        self.assertEqual(set(chromeflags.select(parsed, platform("Windows"))), {"other", "mac", "rest"})
+        self.assertEqual(set(chromeflags.select(parsed, platform("macOS"))), {"windows", "rest"})
+        self.assertEqual(set(chromeflags.select(parsed, platform("Linux"))), {"windows", "mac"})
+        self.assertEqual(set(chromeflags.select(parsed, platform("Android"))), {"windows", "mac"})
+
     def test_select_takes_the_entry_of_each_platform(self):
         source = """
         constexpr auto kFeatureEntries = {
@@ -534,14 +584,54 @@ class TestChromeFlags(unittest.TestCase):
             fetch.side_effect = urllib.error.URLError("down")
             self.assertTrue(chromeflags.overdue(now * 1000 - 5 * day, 157))
 
+    def test_main_fails_when_a_new_version_has_no_report_a_day_after_its_release(self):
+        day = chromeflags.REPORT_DEADLINE_MS
+        released = 1_793_750_400_000 - 3 * day
+        versions = {"Windows": ("157.0.1.1", "156.0.1.1"), "Linux": ("157.0.2.2", "156.0.2.2")}
+
+        def load_entries(version, source, cache):
+            if version == "157.0.1.1":
+                raise urllib.error.URLError("down")
+            return {}
+
+        with (
+            tempfile.TemporaryDirectory() as root,
+            unittest.mock.patch.object(chromeflags, "ROOT", Path(root)),
+            unittest.mock.patch.object(chromeflags, "PLATFORMS", [platform("Windows"), platform("Linux")]),
+            unittest.mock.patch.object(
+                chromeflags, "stable", lambda dash: {157: (versions[dash][0], released), 156: (versions[dash][1], released - day)}
+            ),
+            unittest.mock.patch.object(chromeflags, "stable_cap", return_value=157),
+            unittest.mock.patch.object(chromeflags, "load_entries", load_entries),
+            unittest.mock.patch.object(chromeflags, "load_strings", return_value={}),
+            unittest.mock.patch.object(chromeflags, "overdue", return_value=True) as overdue,
+            unittest.mock.patch.object(chromeflags.sys, "argv", ["chromeflags.py"]),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()) as errors,
+        ):
+            self.assertEqual(chromeflags.main(), 1)
+            report = (Path(root) / "Linux 157.0.2.2.md").read_text(encoding="utf-8")
+        overdue.assert_called_once_with(released, 157)
+        self.assertIn("Windows 157.0.1.1 has no report a day after its release", errors.getvalue())
+        self.assertEqual(report, "# Linux 157.0.2.2\n\nThis release added no new flags.\n")
+
     def test_number_validates_chrome_versions(self):
         self.assertEqual(chromeflags.number("153.0.8010.12"), (153, 0, 8010, 12))
         with self.assertRaises(ValueError):
             chromeflags.number("153.8010")
 
     def test_parse_entries_rejects_unparseable_input(self):
-        with self.assertRaises(ValueError):
-            entries("constexpr auto something_else = {}; ")
+        for source in (
+            "constexpr auto something_else = {}; ",
+            "constexpr auto kFeatureEntries = {};",
+            'constexpr auto kFeatureEntries = {\n    {"a", "A", "D", kOsAll, nullptr},\n',
+            'constexpr auto kFeatureEntries = {\n    {"a, "A", "D", kOsAll, nullptr},\n};',
+            'constexpr auto kFeatureEntries = {\n    {"a", "A", "D", kOsAll, value)},\n};',
+            'constexpr auto kFeatureEntries = {\n    {"a", "A", "D", kOsAll, value(},\n};',
+            'constexpr auto kFeatureEntries = {\n    {"a", GetName(), "D", kOsAll, nullptr},\n};',
+        ):
+            with self.subTest(source=source), self.assertRaises(ValueError):
+                entries(source)
 
 
 if __name__ == "__main__":
