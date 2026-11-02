@@ -164,6 +164,12 @@ def overdue(released: int, milestone: int) -> bool:
     return stable.timestamp() * 1000 < deadline
 
 
+def late(name: str, version: str, released: int) -> list[str]:
+    if (ROOT / f"{name} {version}.md").exists() or not overdue(released, number(version)[0]):
+        return []
+    return [f"{name} {version} has no report a day after its release"]
+
+
 def fetch(url: str) -> str:
     headers = {"User-Agent": "chromeflags", "Accept-Encoding": "gzip"}
     request = urllib.request.Request(url, headers=headers)
@@ -812,6 +818,8 @@ def main() -> int:
         except Exception as error:
             if transient(error):
                 print(f"warning: milestone phases unavailable: {error}", file=sys.stderr)
+                for name, newest in releases.items():
+                    problems += late(name, *newest[max(newest)])
             else:
                 problems.append(f"milestone phases unavailable: {error}")
             return finish(summary, skipped, problems)
@@ -872,8 +880,8 @@ def main() -> int:
             document = report(name, version, load_strings(version, source, cache), added, problems)
         except Exception as error:
             skipped[name] = error
-            if transient(error) and not destination.exists() and overdue(released, number(version)[0]):
-                problems.append(f"{name} {version} has no report a day after its release")
+            if transient(error):
+                problems += late(name, version, released)
             continue
 
         if destination.exists() and not stale:

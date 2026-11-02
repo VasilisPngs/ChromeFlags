@@ -632,6 +632,27 @@ class TestChromeFlags(unittest.TestCase):
         self.assertIn("Windows 157.0.1.1 has no report a day after its release", errors.getvalue())
         self.assertEqual(report, "# Linux 157.0.2.2\n\nThis release added no new flags.\n")
 
+    def test_main_fails_when_milestone_phases_stay_unavailable_a_day_after_a_release(self):
+        day = chromeflags.REPORT_DEADLINE_MS
+        released = 1_793_750_400_000 - 3 * day
+
+        with (
+            tempfile.TemporaryDirectory() as root,
+            unittest.mock.patch.object(chromeflags, "ROOT", Path(root)),
+            unittest.mock.patch.object(chromeflags, "PLATFORMS", [platform("Windows")]),
+            unittest.mock.patch.object(
+                chromeflags, "stable", return_value={157: ("157.0.1.1", released), 156: ("156.0.1.1", released - day)}
+            ),
+            unittest.mock.patch.object(chromeflags, "stable_cap", side_effect=urllib.error.URLError("down")),
+            unittest.mock.patch.object(chromeflags, "overdue", return_value=True) as overdue,
+            unittest.mock.patch.object(chromeflags.sys, "argv", ["chromeflags.py"]),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()) as errors,
+        ):
+            self.assertEqual(chromeflags.main(), 1)
+        overdue.assert_called_once_with(released, 157)
+        self.assertIn("Windows 157.0.1.1 has no report a day after its release", errors.getvalue())
+
     def test_number_validates_chrome_versions(self):
         self.assertEqual(chromeflags.number("153.0.8010.12"), (153, 0, 8010, 12))
         with self.assertRaises(ValueError):
