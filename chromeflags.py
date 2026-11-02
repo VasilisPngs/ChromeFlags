@@ -307,6 +307,9 @@ def feature_entries(clean: str) -> str:
                             raise ValueError(f"kFeatureEntries initializer closes early on line {line_number}")
                         return "\n".join(kept + [line[:index]])
             kept.append(line)
+        elif "{" in line or not KNOWN_TOKENS.isdisjoint(OS_RE.findall(line)):
+            line_number = clean.count("\n", 0, position) + 1
+            raise ValueError(f"kFeatureEntries line {line_number} holds flag data in a branch that is not parsed")
         position += len(line) + 1
 
     raise ValueError("kFeatureEntries initializer is unterminated")
