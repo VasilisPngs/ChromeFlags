@@ -1,4 +1,4 @@
-# Android 157.0.8103.30
+# Android 157.0.8103.38
 
 **Android Keyboard Shortcut Hints**
 

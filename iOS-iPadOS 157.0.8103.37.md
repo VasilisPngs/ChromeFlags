@@ -1,4 +1,4 @@
-# iOS-iPadOS 157.0.8103.24
+# iOS-iPadOS 157.0.8103.37
 
 **AiAvatarFollowupRing**
 
