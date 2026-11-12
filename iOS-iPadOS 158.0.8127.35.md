@@ -1,4 +1,4 @@
-# iOS-iPadOS 158.0.8127.32
+# iOS-iPadOS 158.0.8127.35
 
 **Enable the Android Switcher Default Browser Promo in the FRE**
 
@@ -101,6 +101,14 @@ When enabled, primary account reauthentication flows use SigninReauthCoordinator
 Truncates search URLs for the original query ('oq') and query ('q') parameters across various length limits.
 
 `chrome://flags/#omnibox-truncate-search-url`
+
+---
+
+**Enable password sharing with remote actors**
+
+Enables remote actors to request passwords from the signed in Google account. When requested, the user will be prompted to select a password and authenticate.
+
+`chrome://flags/#remote-actor-credential-sharing`
 
 ---
 
