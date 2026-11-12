@@ -1,4 +1,4 @@
-# Linux 157.0.8103.50
+# macOS 157.0.8103.79
 
 **ABA Search Journeys**
 
@@ -136,14 +136,6 @@ Shows FedCM accounts for passive mode requests in an ambient bubble, instead of 
 
 ---
 
-**Use WebGPU adapter**
-
-Force WebGPU to use a specific graphics adapter backend.
-
-`chrome://flags/#force-webgpu-adapter`
-
----
-
 **Glic Contextual Cueing v2 Auto Submit**
 
 Enable automatically submitting a suggested prompt when the v2 contextual cue UI for Glic is clicked.
@@ -213,6 +205,14 @@ Enables server-side rendering for Glic.
 Enables printing the distilled content from immersive Reading mode.
 
 `chrome://flags/#immersive-read-anything-print`
+
+---
+
+**Mac Sandbox Logging**
+
+Enables sandbox violation logging on macOS. Useful for determining whether an isuse is the result of an unexpected sandbox denial and for debugging issues that stem from sandbox denials.
+
+`chrome://flags/#mac-sandbox-logging`
 
 ---
 
