@@ -1,4 +1,4 @@
-# Android 158.0.8127.36
+# Android 158.0.8127.42
 
 **AAudio per-stream device selection**
 
