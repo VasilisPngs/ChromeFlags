@@ -1,4 +1,4 @@
-# macOS 158.0.8127.37
+# Linux 158.0.8127.88
 
 **Actor login observation start delay**
 
